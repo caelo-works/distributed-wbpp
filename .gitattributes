@@ -1,0 +1,6 @@
+# Normalize line endings: this project's sidecar runs on Linux/macOS, so keep LF
+# in the repo regardless of the contributor's platform.
+* text=auto eol=lf
+
+# Binary artifacts (if ever committed as release assets)
+*.exe binary

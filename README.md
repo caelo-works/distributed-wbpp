@@ -1,0 +1,184 @@
+<div align="center">
+
+# Distributed WBPP
+
+### Run PixInsight's Weighted Batch Preprocessing across every PC on your network
+
+[![Version](https://img.shields.io/badge/version-1.0.0-22d3ee?style=for-the-badge&labelColor=0f172a)](https://github.com/caelo-works/distributed-wbpp/releases/latest)
+[![PixInsight](https://img.shields.io/badge/PixInsight-%E2%89%A5%201.9.0-67e8f9?style=for-the-badge&labelColor=0f172a)](https://pixinsight.com/)
+[![Status](https://img.shields.io/badge/status-beta-fbbf24?style=for-the-badge&labelColor=0f172a)](https://pixinsight-scripts.caelo.works/en/scripts/distributed-wbpp)
+[![License](https://img.shields.io/badge/license-GPL--3.0-94a3b8?style=for-the-badge&labelColor=0f172a)](LICENSE)
+[![Website](https://img.shields.io/badge/%E2%86%92%20see%20all%20scripts-pixinsight--scripts.caelo.works-0f172a?style=for-the-badge&labelColor=22d3ee)](https://pixinsight-scripts.caelo.works/en)
+
+[![CaeloWorks · PixInsight Scripts](https://pixinsight-scripts.caelo.works/assets/readme-banner.png)](https://pixinsight-scripts.caelo.works/en)
+
+</div>
+
+---
+
+## Overview
+
+WBPP calibrates, registers and integrates your frames one machine at a time — while
+the other PCs on your network sit idle. Distributed WBPP puts them to work. You drive
+the **native WBPP dialog** exactly as usual on one machine; the heavy,
+embarrassingly-parallel per-frame steps (calibration, registration, local
+normalization, measurements) and the calibration-master integrations are sharded
+across helper PixInsight instances on your LAN, then collected back for the final
+integration. No shared folder, no reconfiguration — frames move over the network
+through a bundled companion, and the split **self-tunes to each machine's speed**. If
+no helper is found or a version doesn't match, it falls back to a normal local WBPP
+run — never a silently wrong result.
+
+> 📖 **Full details & docs:** **[pixinsight-scripts.caelo.works/en/scripts/distributed-wbpp](https://pixinsight-scripts.caelo.works/en/scripts/distributed-wbpp)**
+
+## Features
+
+| | |
+|---|---|
+| 🖥️ **Native WBPP, unchanged** | You use the real WBPP dialog with all its options — distribution is grafted underneath. The only extra gesture: launch the script in *Client* mode on the other PCs. |
+| 🌐 **Zero-config LAN clustering** | Helpers are discovered automatically (UDP multicast); frames and process parameters travel over HTTP with SHA-256 integrity. No shared drive, no manual IP addresses. |
+| ⚡ **The heavy steps, in parallel** | Calibration, registration, local normalization, measurements and the calibration-master integrations are sharded across the cluster; the server works its own share at the same time. |
+| ⚖️ **Adaptive load balancing** | The server ∥ cluster split is measured and self-tunes every group, weighted by each worker's real throughput — a slower machine simply gets fewer frames, automatically. |
+| 🛟 **Safe local fallback** | A strict version handshake (identical PixInsight + WBPP on every node) guards determinism; on any mismatch, missing helper or error, it runs a normal local WBPP. |
+| 💻 **Cross-platform & self-contained** | Windows, macOS and Linux. The networking companion ships inside the package — nothing to install, no runtime, no configuration. |
+
+## Installation
+
+### From the CaeloWorks update repository — 🚧 coming soon
+
+Distribution through the shared CaeloWorks PixInsight update repository is in the works
+(pending PixInsight certification). Once live, adding
+`https://pixinsight-scripts.caelo.works/update/` under
+**Resources → Updates → Manage Repositories** will install the script and deliver
+updates automatically. Until then, use the manual install below.
+
+### Manual install
+
+Download `DistributedWBPP-<version>.zip` from the
+**[Releases](https://github.com/caelo-works/distributed-wbpp/releases)** and extract it
+**into your PixInsight installation directory**, so that
+`src/scripts/CaeloWorks/DistributedWBPP/` lands under `<PixInsight>/src/scripts/`.
+Restart PixInsight — the script appears under **Script → Batch Processing → Distributed
+WBPP**. Install it on **every PC** you want in the cluster.
+
+> **Requires PixInsight 1.9.0 or newer**, the **same version on every node** — Windows, macOS and Linux.
+
+## Getting started
+
+1. On each **helper** PC, run **Script → Batch Processing → Distributed WBPP** and pick **Client** — leave the window open; it discovers the server and processes the shards it's handed.
+2. On the machine you **drive from**, run it and pick **Server** — the **native WBPP dialog** opens.
+3. Add your frames and configure everything as usual, then click **Run**. A dashboard lists the connected clients and the live **server ∥ cluster** split; WBPP's own Execution Monitor tags each distributed row.
+4. When helpers are present the heavy steps are distributed automatically; the final light integration is assembled locally on the server.
+
+Nothing changes in your usual WBPP habit — the single addition is starting the same
+script in **Client** mode on the other PCs.
+
+## How it works
+
+The server runs the native WBPP pipeline; a version-pinned shim grafts distribution
+onto it, splitting the heavy work over the cluster while the final assembly stays local.
+PJSR can only act as a network *client* and cannot discover peers, so a small bundled
+companion — the **sidecar** (a single static executable per OS, no runtime) — does the
+LAN work.
+
+```
+Server PC: PixInsight + native WBPP + shim ──(localhost, files)──▶ sidecar (agent) ──┐
+                                                                                     │ LAN: auto-discovery
+Client PC: PixInsight + worker script      ◀─(localhost, files)── sidecar (worker) ◀─┘  + frame transfer (SHA-256)
+```
+
+Two complementary distribution models:
+
+| Model | Steps | How |
+|---|---|---|
+| **Per-frame** (intra-group split) | Calibration · Measurements · Registration · Local Normalization | each group's frames are split server ∥ cluster **adaptively** (measured per-machine cost, transfer included) |
+| **Whole-job** (job assignment) | Calibration **master integrations** (bias / dark / flat) | each indivisible integration is leased to one free worker while the server integrates its share in parallel |
+
+Cheap and transfer-bound / fixed-cost steps (final light integration, astrometric
+solution) stay **local** on purpose. Correctness is enforced by the version handshake
+and was validated **bit-identically** against a local run.
+
+---
+
+## Development
+
+### Repo layout
+
+| Path | What |
+|---|---|
+| `sidecar/` | Go companion: discovery (UDP multicast), transfer (HTTP + SHA-256), control plane, whole-job leasing |
+| `pjsr/DistributedWBPP.js` | Single entry: pick **Server** (native WBPP + shim) or **Client** (worker) |
+| `pjsr/lib/` | `SidecarBridge` (PJSR↔sidecar), `WBPPShim` (the monkey-patch), `WorkerRuntime` (client loop), `ProcessSerializer`, `FileLogger` |
+| `pjsr/assets/DistributedWBPP.svg` | Menu icon (`#feature-icon`) |
+| `scripts/build-sidecar.sh` | Cross-compile the sidecar for win/linux/mac |
+| `scripts/build-update-package.sh` | Emit the release artifact (`dist/` zip + `update-package.json`) for the shared update repo |
+| `docs/` | Architecture, WBPP research, status |
+
+### Build
+
+```bash
+cd sidecar && go test ./... && go vet ./...   # test the sidecar
+bash scripts/build-sidecar.sh                 # cross-compile -> bin/ (win/linux/mac)
+```
+
+### Distribution
+
+Distributed WBPP ships through a single, shared CaeloWorks update repository hosted on
+the showcase site (`https://pixinsight-scripts.caelo.works/update/`), which lists every
+CaeloWorks script. **This repo does not generate or host the `updates.xri`** — it emits,
+per release, a standardized *distribution artifact* that the site ingests to build (and
+CPD-sign) the aggregated index.
+
+```bash
+scripts/build-update-package.sh <version> [releaseDate YYYYMMDD]   # -> dist/
+```
+
+Produces two files under `dist/`, both **attached as assets of the matching GitHub
+release** (the hand-off point the site pulls from):
+
+| File | What |
+|---|---|
+| `DistributedWBPP-<version>.zip` | the package, tree **relative to PixInsight's install dir** (extracted verbatim by the updater): `src/scripts/CaeloWorks/DistributedWBPP/{DistributedWBPP.js, lib/*.js, bin/wbpp-sidecar-*}` + `rsc/icons/script/DistributedWBPP/DistributedWBPP.svg`. The WBPP `#include` is rewritten to the portable `../../BatchPreprocessing/`. |
+| `update-package.json` | metadata the site needs to emit this package's `<package>` element: `name, slug, version, fileName, sha1, type, releaseDate, piVersionRange, title, descriptionHtml`. |
+
+- **Reproducible zip.** Entries are sorted, mtimes pinned to 1980-01-01, permissions
+  fixed (`0755` for `bin/`, `0644` otherwise) — identical content yields an identical
+  SHA-1, so the site authenticates the package by the `sha1` in the JSON.
+- **`fileName` is relative** to the repository base URL (served from `…/update/<fileName>`).
+  No absolute GitHub URLs enter the index.
+- **Signature is the site's job.** The `<Signature developerId=…>` on `updates.xri` (CPD
+  identity from Pleiades Astrophoto) is added site-side over the aggregated index.
+- **Sidecar embedded, not downloaded.** All Go binaries (~7 MB each) ride inside the zip
+  and `resolveSidecar()` picks `wbpp-sidecar-<os>-<arch>` at runtime. Because the package
+  is a single `os="all"` archive extracted verbatim, this costs each user ~28 MB of
+  binaries they won't run — accepted to keep the artifact self-contained (no first-launch
+  fetch, no separate binary host, no extra metadata channel). The escape hatch, if size
+  ever bites, is a first-launch download with an embedded SHA manifest — a localized
+  change to `SidecarBridge`, not a re-architecture.
+
+### Limits (assumed)
+
+- The shim monkey-patches WBPP's engine, so a major WBPP refactor can require a version
+  bump (surface is minimal + version-pinned, with a safe **local fallback** when the
+  version is unknown or anything fails — never a silently wrong result).
+- Final **ImageIntegration** of the lights and the **astrometric solution** stay local (a
+  reduction of the largest frames / a fixed cost that doesn't scale with the dataset). The
+  speedup ceiling is set by these local tails.
+- PixInsight must be licensed + installed on every node, all at the **same version** as WBPP.
+
+See [`docs/STATUS.md`](docs/STATUS.md) for the detailed state and
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design.
+
+---
+
+<div align="center">
+
+### 🌌 More PixInsight scripts by CaeloWorks
+
+**[Explore the full catalogue → pixinsight-scripts.caelo.works](https://pixinsight-scripts.caelo.works/en)**
+
+<sub>Made by <a href="https://caelo.works/en">CaeloWorks</a> · astrophotography software, firmware & hardware · GPL-3.0 License</sub>
+
+<sub>PixInsight is a registered trademark of Pleiades Astrophoto, S.L. CaeloWorks is an independent third-party developer.</sub>
+
+</div>

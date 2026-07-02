@@ -1,0 +1,8 @@
+# built sidecar binaries (produced by scripts/build-sidecar.sh)
+/bin/
+# release artifacts (produced by scripts/build-update-package.sh, attached to Releases)
+/dist/
+# caches / OS junk
+__pycache__/
+*.pyc
+.DS_Store
