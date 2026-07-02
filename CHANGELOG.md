@@ -15,6 +15,10 @@ All notable changes to this project are documented here. The format is based on
 - Best-effort macOS quarantine removal (`xattr -dr com.apple.quarantine`) for the
   extracted sidecar binary, so Gatekeeper is less likely to block the unsigned companion.
   Untested on macOS — the proper fix remains code-signing + notarization.
+- Optional, **disabled-by-default** script code-signing step in `build-update-package.sh`
+  (`XSSK_PATH` + `PI_EXE`): produces `DistributedWBPP.xsgn` next to the entry script,
+  entitlements `[]`. Password is prompted (`read -s`) and never persisted. Stays off until
+  CaeloWorks' CPD identity is distributed by Pleiades. `*.xssk` is now git-ignored.
 
 ## [1.0.0] - 2026-07-02
 

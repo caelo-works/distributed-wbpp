@@ -51,6 +51,46 @@ cp "$REPO"/bin/wbpp-sidecar-* "$DST/bin/"
 # 4) menu icon (#feature-icon @script_icons_dir/DistributedWBPP.svg)
 cp "$REPO/pjsr/assets/DistributedWBPP.svg" "$STAGE/rsc/icons/script/DistributedWBPP/DistributedWBPP.svg"
 
+# 4b) OPTIONAL code signature — DISABLED by default.
+#     Enabled only when XSSK_PATH points to the CaeloWorks signing keys (.xssk) and
+#     PI_EXE points to a PixInsight executable. Signs ONLY the main entry script (the
+#     one carrying #feature-id) into DistributedWBPP.xsgn next to it; support files
+#     (lib/*.js) are never signed individually. Entitlements are [] — the plugin calls
+#     none of PixInsight's entitlement-gated operations (verified).
+#
+#     Leave this OFF until CaeloWorks' CPD identity is distributed by Pleiades: an
+#     unverifiable signature is WORSE than none (it can hard-block users, whereas
+#     "unsigned" is only a dismissable warning).
+#
+#     PASSWORD RULE: the key password is prompted at runtime (read -s) and passed to
+#     PixInsight only through the signing process's transient environment. It is NEVER
+#     written to a file, a log, the repo, or a script.
+SIGNED=0
+if [ -n "${XSSK_PATH:-}" ]; then
+  [ -f "$XSSK_PATH" ] || { echo "error: XSSK_PATH not found: $XSSK_PATH" >&2; exit 1; }
+  : "${PI_EXE:?set PI_EXE to your PixInsight executable to code-sign}"
+  printf 'PixInsight signing-key password (not stored): ' >&2
+  read -r -s __DWBPP_PW; echo >&2
+  SIGN_TMP="$( mktemp -d )"; SIGN_JS="$SIGN_TMP/sign.js"
+  # This temp PJSR script carries NO secret and NO path: everything is read from the
+  # PixInsight process environment, which we never persist.
+  cat > "$SIGN_JS" <<'PJSR'
+var xsgn = getEnvironmentVariable( "DWBPP_XSGN" );
+var js   = getEnvironmentVariable( "DWBPP_JS" );
+var xssk = getEnvironmentVariable( "DWBPP_XSSK" );
+var pw   = getEnvironmentVariable( "DWBPP_PW" );
+Security.generateScriptSignatureFile( xsgn, js, [], xssk, pw ); // [] = no entitlements required
+PJSR
+  rm -f "$DST/DistributedWBPP.xsgn"
+  DWBPP_XSGN="$DST/DistributedWBPP.xsgn" DWBPP_JS="$DST/DistributedWBPP.js" \
+  DWBPP_XSSK="$XSSK_PATH" DWBPP_PW="$__DWBPP_PW" \
+    "$PI_EXE" -n --automation-mode --force-exit -r="$SIGN_JS" || true
+  unset __DWBPP_PW
+  rm -rf "$SIGN_TMP"
+  [ -f "$DST/DistributedWBPP.xsgn" ] || { echo "error: no .xsgn produced (check PI_EXE / key / password)" >&2; exit 1; }
+  SIGNED=1
+fi
+
 # 5) reproducible zip: sorted entries, fixed mtime (1980-01-01), fixed perms
 #    (0755 for bin/, 0644 otherwise). No OS/timestamp entropy -> stable SHA-1.
 python3 - "$STAGE" "$OUT/$ZIPNAME" <<'PY'
@@ -93,3 +133,12 @@ JSON
 
 echo "dist/$ZIPNAME  ($(du -h "$OUT/$ZIPNAME" | cut -f1), sha1 $SHA1)"
 echo "dist/update-package.json"
+if [ "$SIGNED" = 1 ]; then
+  echo "  code signature: DistributedWBPP.xsgn INCLUDED (signed)"
+  # A .xsgn embeds a signing timestamp, so a SIGNED zip is NOT byte-reproducible: its
+  # sha1 changes on every signing run even for identical script content. That is fine —
+  # the site regenerates updates.xri from update-package.json's sha1 for each artifact.
+  echo "  note: signed zips are not reproducible (timestamp in the signature); sha1 is per-signing"
+else
+  echo "  code signature: package NOT SIGNED (CPD identity pending validation)"
+fi

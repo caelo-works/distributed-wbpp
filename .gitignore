@@ -6,3 +6,6 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# PixInsight signing keys — MUST NEVER enter this public repo
+*.xssk

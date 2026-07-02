@@ -167,8 +167,25 @@ release** (the hand-off point the site pulls from):
   SHA-1, so the site authenticates the package by the `sha1` in the JSON.
 - **`fileName` is relative** to the repository base URL (served from `…/update/<fileName>`).
   No absolute GitHub URLs enter the index.
-- **Signature is the site's job.** The `<Signature developerId=…>` on `updates.xri` (CPD
-  identity from Pleiades Astrophoto) is added site-side over the aggregated index.
+- **Two signatures, two owners.** The `<Signature developerId=…>` on the aggregated
+  `updates.xri` is the **site's** job (CPD identity from Pleiades Astrophoto). The optional
+  per-**script** code signature (`DistributedWBPP.xsgn`, alongside the `.js` in the zip) is
+  **this** repo's job — but it is **disabled by default** and stays off until CaeloWorks'
+  CPD public key is distributed by PixInsight, because an *unverifiable* signature can
+  hard-block users whereas "unsigned" is only a dismissable warning. To cut a signed
+  artifact once the CPD identity is live:
+
+  ```bash
+  XSSK_PATH=/path/to/CaeloWorks.xssk PI_EXE=/path/to/PixInsight \
+    scripts/build-update-package.sh <version>
+  ```
+
+  The key **password** is prompted at runtime (`read -s`) and handed to PixInsight only
+  through the signing process's transient environment — **never** written to a file, log,
+  script or the repo (and `*.xssk` is git-ignored). Only the entry script is signed
+  (`lib/*.js` are not). A `.xsgn` embeds a timestamp, so a **signed** zip is not
+  byte-reproducible — its `sha1` changes per signing, and the site regenerates the index
+  from the JSON `sha1` accordingly.
 - **Sidecar embedded, not downloaded.** All Go binaries (~7 MB each) ride inside the zip
   and `resolveSidecar()` picks `wbpp-sidecar-<os>-<arch>` at runtime. Because the package
   is a single `os="all"` archive extracted verbatim, this costs each user ~28 MB of
