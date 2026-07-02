@@ -31,6 +31,18 @@ run — never a silently wrong result.
 
 > 📖 **Full details & docs:** **[pixinsight-scripts.caelo.works/en/scripts/distributed-wbpp](https://pixinsight-scripts.caelo.works/en/scripts/distributed-wbpp)**
 
+## Screenshots
+
+<div align="center">
+
+![Role picker — on each PC, choose Server (drive WBPP) or Client (help)](https://pixinsight-scripts.caelo.works/assets/scripts/distributed-wbpp-1-roles.webp)
+
+![Server dashboard — connected clients and the live server ∥ cluster split during the WBPP run](https://pixinsight-scripts.caelo.works/assets/scripts/distributed-wbpp-2-monitor.webp)
+
+![Client — a helper processing the shards it is handed](https://pixinsight-scripts.caelo.works/assets/scripts/distributed-wbpp-3-client.webp)
+
+</div>
+
 ## Features
 
 | | |
@@ -103,7 +115,8 @@ and was validated **bit-identically** against a local run.
 
 ---
 
-## Development
+<details>
+<summary><b>🛠 Development</b> — build, CI, packaging contract, WBPP compatibility, limits</summary>
 
 ### Repo layout
 
@@ -171,6 +184,8 @@ release** (the hand-off point the site pulls from):
 
 See [`docs/STATUS.md`](docs/STATUS.md) for the detailed state and
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design.
+
+</details>
 
 ---
 
