@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: CaeloWorks PixInsight scripts
+    url: https://pixinsight-scripts.caelo.works/en
+    about: Documentation and the full catalogue of CaeloWorks PixInsight scripts.
+  - name: Security report
+    url: https://github.com/caelo-works/distributed-wbpp/security/advisories/new
+    about: Report a vulnerability privately (do not open a public issue).
