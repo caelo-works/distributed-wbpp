@@ -52,7 +52,7 @@ run — never a silently wrong result.
 | ⚡ **The heavy steps, in parallel** | Calibration, registration, local normalization, measurements and the calibration-master integrations are sharded across the cluster; the server works its own share at the same time. |
 | ⚖️ **Adaptive load balancing** | The server ∥ cluster split is measured and self-tunes every group, weighted by each worker's real throughput — a slower machine simply gets fewer frames, automatically. |
 | 🛟 **Safe local fallback** | A strict version handshake (identical PixInsight + WBPP on every node) guards determinism; on any mismatch, missing helper or error, it runs a normal local WBPP. |
-| 💻 **Cross-platform & self-contained** | Windows, macOS and Linux. The networking companion ships inside the package — nothing to install, no runtime, no configuration. |
+| 💻 **Self-contained companion** | The networking companion ships inside the package — nothing to install, no runtime, no configuration. **Validated on Windows**; the macOS and Linux binaries are cross-compiled and bundled but **not yet runtime-tested** (see note below). |
 
 ## Installation
 
@@ -76,7 +76,12 @@ Download `DistributedWBPP-<version>.zip` from the
 Restart PixInsight — the script appears under **Script → Batch Processing → Distributed
 WBPP**. Install it on **every PC** you want in the cluster.
 
-> **Requires PixInsight 1.9.0 or newer**, the **same version on every node** — Windows, macOS and Linux.
+> **Requires PixInsight 1.9.0 or newer**, the **same version on every node.**
+>
+> **Platform support:** validated on **Windows**. The **macOS** and **Linux** binaries are
+> cross-compiled and bundled but **not yet tested end-to-end** — feedback welcome. On macOS
+> the companion is not yet code-signed, so Gatekeeper may block the (unsigned) binary until
+> that's addressed.
 
 ## Getting started
 

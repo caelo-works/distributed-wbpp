@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+- README states the real platform-validation status: validated on **Windows**; the
+  **macOS** and **Linux** binaries are cross-compiled and bundled but not yet
+  runtime-tested.
+
+### Added
+- Best-effort macOS quarantine removal (`xattr -dr com.apple.quarantine`) for the
+  extracted sidecar binary, so Gatekeeper is less likely to block the unsigned companion.
+  Untested on macOS — the proper fix remains code-signing + notarization.
+
 ## [1.0.0] - 2026-07-02
 
 ### Added

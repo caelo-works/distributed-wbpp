@@ -118,10 +118,18 @@ function resolveSidecar()
    for ( var i = 0; i < c.length; ++i )
       if ( File.exists( c[ i ] ) )
       {
-         // extracted zips can drop the exec bit on Unix — restore it before launch
-         if ( !/\.exe$/i.test( c[ i ] ) )
-            try { var X = new ExternalProcess; X.start( "/bin/chmod", [ "+x", c[ i ] ] ); X.waitForFinished(); } catch ( e ) {}
-         return c[ i ];
+         var p = c[ i ];
+         if ( !/\.exe$/i.test( p ) )
+         {
+            // macOS quarantines binaries extracted from a downloaded zip; strip the flag
+            // so Gatekeeper doesn't block the (unsigned) sidecar. UNTESTED on macOS — the
+            // proper fix is code-signing + notarization; this is a best-effort fallback.
+            if ( /MAC|macOS|OSX/i.test( String( CoreApplication.platform ) ) )
+               try { var Q = new ExternalProcess; Q.start( "/usr/bin/xattr", [ "-dr", "com.apple.quarantine", p ] ); Q.waitForFinished(); } catch ( e ) {}
+            // extracted zips can drop the exec bit on Unix — restore it before launch
+            try { var X = new ExternalProcess; X.start( "/bin/chmod", [ "+x", p ] ); X.waitForFinished(); } catch ( e ) {}
+         }
+         return p;
       }
    return null;
 }
