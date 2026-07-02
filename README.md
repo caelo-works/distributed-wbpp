@@ -44,13 +44,16 @@ run — never a silently wrong result.
 
 ## Installation
 
-### From the CaeloWorks update repository — 🚧 coming soon
+### From the CaeloWorks update repository (recommended)
 
-Distribution through the shared CaeloWorks PixInsight update repository is in the works
-(pending PixInsight certification). Once live, adding
-`https://pixinsight-scripts.caelo.works/update/` under
-**Resources → Updates → Manage Repositories** will install the script and deliver
-updates automatically. Until then, use the manual install below.
+In PixInsight, open **Resources → Updates → Manage Repositories** and add
+`https://pixinsight-scripts.caelo.works/update/`, then run
+**Resources → Updates → Check for Updates**, accept the install and restart.
+Do this on **every PC** of the cluster. Updates are then delivered
+automatically through the same channel.
+
+> The repository is not CPD-signed yet, so PixInsight shows an
+> "unsigned repository" warning; signing is underway.
 
 ### Manual install
 
