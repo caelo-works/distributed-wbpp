@@ -9,3 +9,15 @@ __pycache__/
 
 # PixInsight signing keys — MUST NEVER enter this public repo
 *.xssk
+
+# stray local Go build output
+/sidecar/wbpp-sidecar
+/sidecar/wbpp-sidecar.exe
+
+# local screenshots / scratch images — never part of the repo (trace risk)
+/*.png
+/*.jpg
+/*.jpeg
+
+# local/dev test harness (not published; sanitize before ever adding)
+/pjsr/test/
