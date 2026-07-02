@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Go test + vet + gofmt
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sidecar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sidecar/go.mod
+          cache-dependency-path: sidecar/go.sum
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt-clean:"; echo "$unformatted"
+            echo "run: gofmt -w sidecar"; exit 1
+          fi
+
+  lint:
+    name: golangci-lint (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sidecar/go.mod
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          working-directory: sidecar
+
+  package:
+    name: Package builds + reproducible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sidecar/go.mod
+          cache-dependency-path: sidecar/go.sum
+      - name: Cross-compile the sidecar (all OSes)
+        run: bash scripts/build-sidecar.sh
+      - name: Build the update package
+        run: bash scripts/build-update-package.sh 0.0.0-ci
+      - name: Zip is reproducible (same content -> same SHA-1)
+        run: |
+          a="$(sha1sum dist/DistributedWBPP-0.0.0-ci.zip | cut -d' ' -f1)"
+          bash scripts/build-update-package.sh 0.0.0-ci
+          b="$(sha1sum dist/DistributedWBPP-0.0.0-ci.zip | cut -d' ' -f1)"
+          echo "build #1: $a"; echo "build #2: $b"
+          [ "$a" = "$b" ] || { echo "::error::the package zip is not reproducible"; exit 1; }
