@@ -32,18 +32,9 @@ jobs:
             echo "run: gofmt -w sidecar"; exit 1
           fi
 
-  lint:
-    name: golangci-lint (advisory)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: sidecar/go.mod
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          working-directory: sidecar
+  # NOTE: golangci-lint is intentionally omitted for now — it does not yet run on the
+  # go.mod toolchain (Go 1.26). `go vet` + `gofmt` (above) are the lint baseline; re-add a
+  # golangci-lint job once it supports the toolchain version.
 
   package:
     name: Package builds + reproducible
