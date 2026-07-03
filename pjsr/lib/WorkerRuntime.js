@@ -234,7 +234,7 @@ function WorkerDialog( bridge )
 
    // header
    this.header = new Label( this );
-   this.header.frameStyle = FrameStyle_Box;
+   this.header.frameStyle = FrameStyle.Box;
    this.header.margin = 6;
    this.header.useRichText = true;
    this.header.text = "<b>Client active.</b> Waiting for work from the server…";
@@ -278,7 +278,7 @@ function WorkerDialog( bridge )
    // auto-export to a shared log file on the deployment drive (e.g. Y:\...\logs)
    this.logger = new FileLogger( scriptParentDir() + "/logs", "client",
       [ "Distributed-WBPP CLIENT",
-        "PixInsight " + piVersionString() + " / WBPP " + WBPP_VERSION,
+        "PixInsight " + piVersionString() + " / WBPP " + wbppVersionString(),
         "Data dir: " + bridge.dataDir, "" ] );
 
    // append one line to the UI list (auto-scroll) and to the log file
@@ -352,6 +352,6 @@ function runWorker( bridge )
 {
    ensureDirectory( bridge.dataDir );
    console.noteln( "* Distributed-WBPP client active (pi=", piVersionString(),
-      ", wbpp=", WBPP_VERSION, "). Data: ", bridge.dataDir );
+      ", wbpp=", wbppVersionString(), "). Data: ", bridge.dataDir );
    ( new WorkerDialog( bridge ) ).execute();
 }

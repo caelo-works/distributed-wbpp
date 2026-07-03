@@ -6,7 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-03
+
+### Fixed
+- **Loads again on PixInsight 1.9.4 / WBPP 3.0.1** (WBPP 3.0 was a breaking restructure):
+  single `BPP-Main.js` include (no more `BPP-defines.jsh`), identity read from
+  `BPP.Version.*`, `#engine v8`, and v8 runtime constant objects (`StdButton.Ok`,
+  `StdIcon.Error`, `FrameStyle.Box`) instead of the legacy `pjsr/*.jsh` headers, which no
+  longer load under v8.
+
 ### Changed
+- **Distribution is temporarily inactive on WBPP 3.0.x**: the shim's engine anchors are
+  not yet re-verified for 3.0, so runs fall back to the normal local WBPP (by design —
+  see `docs/COMPATIBILITY.md`). Clustering returns once the 3.0 port is validated.
+- The update channel now gates this plugin to PixInsight ≥ 1.9.4 (`piVersionRange`);
+  PixInsight ≤ 1.9.3 / WBPP 2.9.x stays on plugin v1.0.0. A runtime
+  `ensureMinimumVersion( 1, 9, 4 )` guards direct installs.
 - README states the real platform-validation status: validated on **Windows**; the
   **macOS** and **Linux** binaries are cross-compiled and bundled but not yet
   runtime-tested.
@@ -41,5 +56,6 @@ All notable changes to this project are documented here. The format is based on
   reproducible release artifact (`build-update-package.sh`).
 - Verified on PixInsight 1.9.3 / WBPP 2.9.1 (see [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)).
 
-[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/caelo-works/distributed-wbpp/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/caelo-works/distributed-wbpp/releases/tag/v1.0.0

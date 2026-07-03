@@ -39,9 +39,16 @@ Support is declared in one place — `WBPP_SHIM_COMPAT` in
 var WBPP_SHIM_COMPAT = { "2.9.1": true };
 ```
 
-| PixInsight | WBPP | Status |
-|---|---|---|
-| 1.9.3 | 2.9.1 | Verified — full SHO run, distributed masters validated bit-identically vs local |
+| PixInsight | WBPP | Plugin | Status |
+|---|---|---|---|
+| 1.9.4 | 3.0.1 | ≥ 1.0.1 | **Loads & runs native WBPP** (v8 engine, `BPP.Version.*` layout). Distribution **inactive** — the 3.0.x engine anchors are not yet re-verified, so the shim falls back to a normal local run. Port in progress. |
+| 1.9.3 | 2.9.1 | 1.0.0 | Verified — full SHO run, distributed masters validated bit-identically vs local. Plugin ≥ 1.0.1 does **not** load on this generation (WBPP 3.x include layout); stay on v1.0.0. |
+
+> **WBPP 3.0 was a breaking restructure** (PixInsight 1.9.4): `BPP-defines.jsh` removed,
+> identity moved to `BPP.Version.*`, scripts run under `#engine v8`, and the legacy
+> `pjsr/*.jsh` headers no longer load (their constants are v8 runtime globals such as
+> `StdButton.Ok`). Plugin 1.0.1 adopts that layout; the update channel gates it to
+> PixInsight ≥ 1.9.4 via `piVersionRange`.
 
 Every node in a cluster must run the **same** PixInsight + WBPP versions; the sidecar
 enforces this with a version handshake and refuses to distribute on a mismatch.

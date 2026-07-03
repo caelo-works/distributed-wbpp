@@ -145,7 +145,7 @@ function installShim( engine, bridge, options )
    if ( typeof options.onLog == "function" )
       __wbppClusterLog = options.onLog;
 
-   var version = ( typeof WBPP_VERSION != "undefined" ) ? WBPP_VERSION : "unknown";
+   var version = wbppVersionString();
    if ( options.enabled === false )
       return { active: false, reason: "disabled by user" };
    if ( !WBPP_SHIM_COMPAT[ version ] )

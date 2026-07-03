@@ -19,6 +19,8 @@
 
 /* beautify ignore:start */
 
+#engine v8
+
 #feature-id    Batch Processing > Distributed WBPP
 #feature-icon  @script_icons_dir/DistributedWBPP.svg
 #feature-info  Run the native WBPP across multiple PixInsight instances on the LAN.
@@ -29,14 +31,13 @@
 #define DWBPP_BUILD   "__BUILD__"
 
 // the installed WBPP engine + GUI (server role runs it; client role loads it too,
-// which is what lets both nodes advertise the same WBPP_VERSION for the handshake)
-#include "__WBPPDIR__/BPP-defines.jsh"
-#include "__WBPPDIR__/BPP-main.js"
+// which is what lets both nodes advertise the same WBPP version for the handshake).
+// WBPP >= 3.0 (PixInsight 1.9.4): single entry include, identity under BPP.Version.*,
+// engine v8. For WBPP 2.9.x (PixInsight <= 1.9.3) use plugin v1.0.0.
+#include "__WBPPDIR__/BPP-Main.js"
 
-#include <pjsr/Sizer.jsh>
-#include <pjsr/FrameStyle.jsh>
-#include <pjsr/StdButton.jsh>
-#include <pjsr/StdIcon.jsh>
+// No pjsr/*.jsh includes: under #engine v8 the legacy .jsh headers don't load;
+// StdButton/StdIcon/FrameStyle (and Sizer classes) are provided as runtime globals.
 #include "lib/SidecarBridge.js"
 #include "lib/ProcessSerializer.js"
 #include "lib/WBPPShim.js"
@@ -51,6 +52,25 @@ function piVersionString()
 {
    return format( "%d.%d.%d",
       CoreApplication.versionMajor, CoreApplication.versionMinor, CoreApplication.versionRelease );
+}
+
+// The installed WBPP version, wherever this WBPP generation keeps it:
+// >= 3.0 exposes BPP.Version.WBPP_VERSION; 2.9.x had a WBPP_VERSION #define.
+function wbppVersionString()
+{
+   if ( typeof BPP != "undefined" && BPP.Version && BPP.Version.WBPP_VERSION )
+      return String( BPP.Version.WBPP_VERSION );
+   if ( typeof WBPP_VERSION != "undefined" )
+      return String( WBPP_VERSION );
+   return "unknown";
+}
+
+// Launch the native WBPP exactly as the stock WBPP.js entry does.
+function runNativeWBPP()
+{
+   BPPmain( false /* fastMode */,
+      BPP.Version.WBPP_ID, BPP.Version.WBPP_TITLE,
+      BPP.Version.WBPP_SETTINGS_KEY_BASE, BPP.Version.WBPP_VERSION );
 }
 
 // Full directory of this script (PixInsight splits a path into DRIVE + DIRECTORY,
@@ -194,7 +214,7 @@ function ServerDashboard()
    this.T = new ElapsedTime;
 
    this.header = new Label( this );
-   this.header.frameStyle = FrameStyle_Box;
+   this.header.frameStyle = FrameStyle.Box;
    this.header.margin = 6;
    this.header.useRichText = true;
    this.header.text = "<b>Server ready.</b> Distribution will show here during the WBPP run.";
@@ -237,7 +257,7 @@ function ServerDashboard()
 
    this.logger = new FileLogger( scriptParentDir() + "/logs", "server",
       [ "Distributed-WBPP SERVER",
-        "PixInsight " + piVersionString() + " / WBPP " + ( ( typeof WBPP_VERSION != "undefined" ) ? WBPP_VERSION : "?" ),
+        "PixInsight " + piVersionString() + " / WBPP " + wbppVersionString(),
         "" ] );
 
    var self = this;
@@ -286,7 +306,7 @@ function runServer( bridge )
       dashboard.logLine( "Cluster inactive (" + status.reason + ") — WBPP runs locally." );
 
    // run WBPP exactly as the stock entry does; the user configures + clicks GO.
-   try { BPPmain( false, WBPP_ID, WBPP_TITLE, WBPP_SETTINGS_KEY_BASE, WBPP_VERSION ); }
+   try { runNativeWBPP(); }
    finally { dashboard.recap(); }
 }
 
@@ -294,6 +314,10 @@ function runServer( bridge )
 
 function main()
 {
+   // this build targets the WBPP >= 3.0 layout (PixInsight >= 1.9.4);
+   // on older PixInsight use plugin v1.0.0 (the update channel gates this too)
+   CoreApplication.ensureMinimumVersion( 1, 9, 4 );
+
    var picker = new RoleDialog;
    if ( !picker.execute() || !picker.role )
       return;
@@ -302,7 +326,7 @@ function main()
    if ( sidecar == null )
    {
       ( new MessageBox( "Sidecar not found next to the script.\n\nPaths tried:\n  " +
-         sidecarCandidates().join( "\n  " ), "Distributed WBPP", StdIcon_Error, StdButton_Ok ) ).execute();
+         sidecarCandidates().join( "\n  " ), "Distributed WBPP", StdIcon.Error, StdButton.Ok ) ).execute();
       return;
    }
 
@@ -313,7 +337,7 @@ function main()
       role:        isServer ? "server" : "worker",
       token:       CLUSTER_TOKEN,
       piVersion:   piVersionString(),
-      wbppVersion: ( typeof WBPP_VERSION != "undefined" ) ? WBPP_VERSION : "unknown",
+      wbppVersion: wbppVersionString(),
       logDir:      scriptParentDir() + "/logs",
       dataDir:     isServer ? "" : ( File.systemTempDirectory + "/wbpp-cluster-worker" ),
       discoverSeconds: 3
@@ -325,11 +349,11 @@ function main()
       if ( isServer )
       {
          console.criticalln( "** Distributed-WBPP: sidecar failed (" + e.message + "). Local WBPP." );
-         BPPmain( false, WBPP_ID, WBPP_TITLE, WBPP_SETTINGS_KEY_BASE, WBPP_VERSION );
+         runNativeWBPP();
       }
       else
          ( new MessageBox( "Could not start the sidecar: " + e.message,
-            "Distributed WBPP — Client", StdIcon_Error, StdButton_Ok ) ).execute();
+            "Distributed WBPP — Client", StdIcon.Error, StdButton.Ok ) ).execute();
       return;
    }
 

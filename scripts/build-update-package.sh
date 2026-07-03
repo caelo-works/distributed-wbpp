@@ -125,7 +125,7 @@ cat > "$OUT/update-package.json" <<JSON
   "sha1": "${SHA1}",
   "type": "script",
   "releaseDate": "${RELEASE_DATE}",
-  "piVersionRange": "1.9.0:1.9.99",
+  "piVersionRange": "1.9.4:1.9.99",
   "title": "Distributed WBPP v${VERSION}",
   "descriptionHtml": "<p>Distribute PixInsight's Weighted Batch Preprocessing (WBPP) across several PixInsight instances on your local network. One machine drives the native WBPP UI as usual, while the heavy per-frame steps (calibration, registration, local normalization, measurements) and calibration-master integrations are sharded to helper machines. Falls back to a normal local WBPP run when no helpers are found.</p>"
 }
