@@ -4,7 +4,7 @@
 
 ### Run PixInsight's Weighted Batch Preprocessing across every PC on your network
 
-[![Version](https://img.shields.io/badge/version-1.6.0-22d3ee?style=for-the-badge&labelColor=0f172a)](https://github.com/caelo-works/distributed-wbpp/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.7.0-22d3ee?style=for-the-badge&labelColor=0f172a)](https://github.com/caelo-works/distributed-wbpp/releases/latest)
 [![PixInsight](https://img.shields.io/badge/PixInsight-%E2%89%A5%201.9.0-67e8f9?style=for-the-badge&labelColor=0f172a)](https://pixinsight.com/)
 [![Status](https://img.shields.io/badge/status-beta-fbbf24?style=for-the-badge&labelColor=0f172a)](https://pixinsight-scripts.caelo.works/en/scripts/distributed-wbpp)
 [![License](https://img.shields.io/badge/license-GPL--3.0-94a3b8?style=for-the-badge&labelColor=0f172a)](LICENSE)
@@ -52,7 +52,7 @@ run — never a silently wrong result.
 | ⚡ **The heavy steps, in parallel** | Calibration, registration, local normalization, measurements and the calibration-master integrations are sharded across the cluster; the server works its own share at the same time. |
 | ⚖️ **Adaptive load balancing** | The server ∥ cluster split is measured and self-tunes every group, weighted by each worker's real throughput — a slower machine simply gets fewer frames, automatically. |
 | 🛟 **Safe local fallback** | A strict version handshake (identical PixInsight + WBPP on every node) guards determinism; on any mismatch, missing helper or error, it runs a normal local WBPP. |
-| 💻 **Self-contained companion** | The networking companion ships inside the package — nothing to install, no runtime, no configuration. **Validated on Windows and Linux** (mixed-OS clusters included); the macOS binary is cross-compiled and bundled but **not yet runtime-tested** (see note below). |
+| 💻 **Self-contained companion** | The networking companion ships inside the package — nothing to install, no runtime, no configuration. **Validated on Windows, macOS and Linux**, including mixed-OS clusters (see the mixed-OS note below). |
 
 ## Installation
 
@@ -78,11 +78,11 @@ WBPP**. Install it on **every PC** you want in the cluster.
 
 > **Requires PixInsight 1.9.0 or newer**, the **same version on every node.**
 >
-> **Platform support:** validated on **Windows** and **Linux** (Ubuntu 24.04), including a
-> **mixed Windows-server + Linux-worker cluster** run end-to-end. The **macOS** binary is
-> cross-compiled and bundled but **not yet tested end-to-end** — feedback welcome. On macOS
-> the companion is not yet code-signed, so Gatekeeper may block the (unsigned) binary until
-> that's addressed.
+> **Platform support:** validated end-to-end on **Windows**, **macOS** (Sonoma, Intel) and
+> **Linux** (Ubuntu 24.04), including **mixed-OS clusters** (Windows server driving Linux
+> and macOS workers). The companion is not yet code-signed; on macOS that is harmless in
+> practice — PixInsight spawns it directly, a path Gatekeeper does not block — and the
+> plugin defensively strips the quarantine flag anyway.
 >
 > **Mixed-OS note:** results are **bit-identical** when all nodes run the same OS. Across
 > OSes they are **numerically equivalent but not bit-identical**: PixInsight's math libraries

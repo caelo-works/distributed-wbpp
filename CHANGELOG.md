@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-07-04
+
+### Added
+- **macOS validated end-to-end** (Sonoma 14.8, Intel, PixInsight 1.9.4 / WBPP 3.0.1) —
+  the platform table is now complete: Windows, macOS and Linux are all runtime-verified,
+  including mixed-OS clusters. A real Windows-server + macOS-worker run collected every
+  distributed operation (per-frame ops, calibration/light/drizzle integrations, LN
+  reference) with clean logs on both sides (worker: 16 jobs, 0 errors); the cross-OS
+  numeric-equivalence profile matches the documented Linux caveat (identical means to
+  < 1e-10, worst local difference on marginal rejection pixels).
+- **Gatekeeper verified harmless for the bundled companion**: a deliberately quarantined
+  `wbpp-sidecar-darwin-amd64` still executes when spawned directly (Gatekeeper gates
+  Finder/LaunchServices launches, and PixInsight spawns the sidecar via ExternalProcess);
+  the plugin's defensive quarantine-strip covers the remaining GUI-mediated cases. The
+  README no longer warns that Gatekeeper may block the companion.
+
 ## [1.6.0] - 2026-07-04
 
 ### Changed
@@ -189,7 +205,8 @@ All notable changes to this project are documented here. The format is based on
   reproducible release artifact (`build-update-package.sh`).
 - Verified on PixInsight 1.9.3 / WBPP 2.9.1 (see [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)).
 
-[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.3.0...v1.4.0
