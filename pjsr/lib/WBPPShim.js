@@ -129,7 +129,7 @@ function __verifiedOutputs( report )
  * executeGlobal. We patch that add() to grab the instance and abort the native
  * run with the sentinel. Returns { captured, nativeErr } and always restores.
  */
-function __captureViaContainer( engine, runNative )
+function __captureViaContainer( engine, runNative, skipAdds )
 {
    // NB: on 1.9.4 processContainer is a NATIVE ProcessContainer and method patches
    // on native objects are ignored under v8 — so we swap the whole PROPERTY for a
@@ -139,8 +139,22 @@ function __captureViaContainer( engine, runNative )
    if ( !orig )
       throw new Error( "engine.processContainer not available for capture" );
    var captured = null, nativeErr = null;
+   var toSkip = skipAdds || 0;
    engine.processContainer = {
-      add: function( p ) { captured = p; throw __WBPP_CAPTURE_SENTINEL; },
+      // forward the first `skipAdds` processes to the real container (their native
+      // execution proceeds untouched) and capture-abort the next one — lets us grab
+      // the SECOND process of a composite routine (e.g. generateLNReference: LN
+      // runs locally, the reference ImageIntegration is captured).
+      add: function( p )
+      {
+         if ( toSkip > 0 )
+         {
+            toSkip--;
+            try { return orig.add( p ); } catch ( e ) { return; }
+         }
+         captured = p;
+         throw __WBPP_CAPTURE_SENTINEL;
+      },
       toSource: function() { return ( orig && orig.toSource ) ? orig.toSource.apply( orig, arguments ) : ""; }
    };
    try { runNative(); }
@@ -231,6 +245,7 @@ function installShim( engine, bridge, options )
    // worker (no deadlock). Server integrates its own share locally in parallel.
    if ( options.calibIntegration !== false )
       wrapCalibIntegration( engine, bridge );
+      wrapLNReference( engine, bridge );
 
    return { active: true, reason: "ok", workers: workers.length, operations: enabled };
 }
@@ -597,6 +612,26 @@ function gatherLightBatch( engine, firstOp )
    return batch;
 }
 
+// The master-frame metadata doIntegrate applies before writing: WBPP comments,
+// unique-merged IMAGETYP/BINNING/FILTER/EXPTIME keywords, signature property and
+// the Instrument:Filter:Name image property.
+function __applyMasterMetadata( engine, frameGroup, win )
+{
+   var keywords = [
+      new FITSKeyword( "COMMENT", "", "PixInsight image preprocessing pipeline" ),
+      new FITSKeyword( "COMMENT", "", "Master frame generated with " + engine.title + " v" + engine.version ),
+      new FITSKeyword( "IMAGETYP", StackEngine.imageTypeToMasterKeywordValue( frameGroup.imageType ), "Type of image" ),
+      new FITSKeyword( "XBINNING", format( "%d", frameGroup.binning ), "Binning factor, horizontal axis" ),
+      new FITSKeyword( "YBINNING", format( "%d", frameGroup.binning ), "Binning factor, vertical axis" ),
+      new FITSKeyword( "FILTER", frameGroup.filter, "Filter used when taking image" ),
+      new FITSKeyword( "EXPTIME", format( "%.3f", frameGroup.exposureTime ), "Exposure time in seconds" )
+   ];
+   var uniq = [ "IMAGETYP", "XBINNING", "YBINNING", "FILTER", "EXPTIME" ];
+   engine.imageProcessor.generateSignatureProperty( win );
+   engine.imageProcessor.setImagePropertyString( win, "Instrument:Filter:Name", frameGroup.filter );
+   win.keywords = keywords.concat( win.keywords.filter( function( k ) { return uniq.indexOf( k.name ) == -1; } ) );
+}
+
 /*
  * finalizeLightMaster — turn a worker's raw integration bundle into the exact
  * master WBPP's own doIntegrate would have produced, and wire the group state:
@@ -650,19 +685,7 @@ function finalizeLightMaster( engine, operation, vo, cap )
        highWin = ( wins.length > 2 ) ? wins[ 2 ] : null;
 
    // 3) keywords + signature + filter property, exactly like doIntegrate
-   var keywords = [
-      new FITSKeyword( "COMMENT", "", "PixInsight image preprocessing pipeline" ),
-      new FITSKeyword( "COMMENT", "", "Master frame generated with " + engine.title + " v" + engine.version ),
-      new FITSKeyword( "IMAGETYP", StackEngine.imageTypeToMasterKeywordValue( frameGroup.imageType ), "Type of image" ),
-      new FITSKeyword( "XBINNING", format( "%d", frameGroup.binning ), "Binning factor, horizontal axis" ),
-      new FITSKeyword( "YBINNING", format( "%d", frameGroup.binning ), "Binning factor, vertical axis" ),
-      new FITSKeyword( "FILTER", frameGroup.filter, "Filter used when taking image" ),
-      new FITSKeyword( "EXPTIME", format( "%.3f", frameGroup.exposureTime ), "Exposure time in seconds" )
-   ];
-   var uniq = [ "IMAGETYP", "XBINNING", "YBINNING", "FILTER", "EXPTIME" ];
-   engine.imageProcessor.generateSignatureProperty( win );
-   engine.imageProcessor.setImagePropertyString( win, "Instrument:Filter:Name", frameGroup.filter );
-   win.keywords = keywords.concat( win.keywords.filter( function( k ) { return uniq.indexOf( k.name ) == -1; } ) );
+   __applyMasterMetadata( engine, frameGroup, win );
 
    // 4) write with WBPP naming; the high rejection map is embedded only when the
    //    engine embeds rejection maps (doIntegrate: II.clipHigh && embedRejectionMaps)
@@ -692,6 +715,196 @@ function finalizeLightMaster( engine, operation, vo, cap )
    operation.statusMessage = operation.__nFrames + " integrated  [cluster]" +
       ( nXdrz > 0 ? ( ", " + nXdrz + " xdrz updated" ) : "" );
    return filePath;
+}
+
+/*
+ * -------- LN reference generation (per filter, whole-job) --------------------
+ * The "LN reference generation" op calls engine.imageProcessor.generateLNReference:
+ * it locally-normalizes the N best frames (a LocalNormalization the op adds to the
+ * container FIRST) and then integrates them via doIntegrate with the LN_Reference_
+ * prefix (an ImageIntegration added SECOND). We let the LN pass through natively
+ * (skipAdds=1) and capture the reference ImageIntegration, then lease it as a
+ * whole-job — the worker path is the existing "light_integration" one (4-column
+ * rows with .xnml companions; no drizzle, no rejection maps here).
+ * The interactive mode has a different op name ("LN reference [interactive]") and
+ * is therefore never touched.
+ */
+function wrapLNReference( engine, bridge )
+{
+   var q = engine.operationQueue;
+   if ( !q || q.__wbppLNRefWrapped )
+      return;
+   q.__wbppLNRefWrapped = true;
+   var inner = q.addOperation;
+   q.addOperation = function( operation, params )
+   {
+      if ( operation && operation.name == "LN reference generation" && operation.group )
+      {
+         operation.__origRun = operation.run;
+         operation.run = function( env, ri )
+         {
+            if ( operation.__clusterDone )
+               return operation.__clusterStatus;
+            try
+            {
+               return distributeLNRefBatch( engine, operation, bridge, env, ri );
+            }
+            catch ( e )
+            {
+               __clusterLog( "⚠ LN reference: local fallback (" + e.message + ")" );
+               return operation.__origRun.call( operation, env, ri );
+            }
+         };
+      }
+      return inner.call( q, operation, params );
+   };
+}
+
+function gatherLNRefBatch( engine, firstOp )
+{
+   var ops = engine.operationQueue.operations, batch = [];
+   for ( var i = firstOp.__index__; i < ops.length; ++i )
+   {
+      var op = ops[ i ].operation;
+      if ( op.name == "LN reference generation" && op.group )
+         batch.push( op );
+      else if ( op.name && op.name.length > 0 )
+         break;         // next named op (first "Local Normalization") = boundary
+      // else: unnamed log block => skip
+   }
+   return batch;
+}
+
+// Run the op natively up to the reference integration: the inner LN of the best
+// frames executes locally (its bookkeeping intact), the ImageIntegration that
+// follows is captured. Returns { source, frames, companions } for the job.
+function captureLNRefII( engine, operation, env, ri )
+{
+   var cap = __captureViaContainer( engine,
+      function() { operation.__origRun.call( operation, env, ri ); }, 1 /* let the LN through */ );
+   if ( cap.nativeErr )
+      throw cap.nativeErr;
+   var captured = cap.captured;
+   if ( !captured )
+      throw new Error( "reference II not captured (native path completed)" );
+   if ( !( captured instanceof ImageIntegration ) )
+      throw new Error( "captured a non-II process" );
+   var frames = [], companions = [];
+   var rows = captured.images;
+   for ( var r = 0; r < rows.length; ++r )
+   {
+      frames.push( String( rows[ r ][ 1 ] ) );
+      var ln = ( rows[ r ].length > 3 ) ? String( rows[ r ][ 3 ] ) : "";
+      if ( ln.length > 0 && File.exists( ln ) )
+         companions.push( ln );
+   }
+   return { source: serializeProcess( captured, "II" ), frames: frames, companions: companions };
+}
+
+// Write the worker's integration as the LN_Reference master (doIntegrate naming:
+// prefix LN_Reference_, empty postfix, no rejection maps) and wire the group.
+function finalizeLNReference( engine, operation, vo, cap )
+{
+   var frameGroup = operation.group;
+   var bundlePath = null;
+   for ( var i = 0; i < vo.length; ++i )
+      if ( /\.xisf$/i.test( vo[ i ].path ) )
+         bundlePath = vo[ i ].path;
+   if ( !bundlePath )
+      throw new Error( "no reference integration in the outputs" );
+
+   var wins = ImageWindow.open( bundlePath );
+   var win = ( wins instanceof Array ) ? wins[ 0 ] : wins;
+   __applyMasterMetadata( engine, frameGroup, win );
+   var filePath = WBPPUtils.existingAndUniqueFileName( engine.outputDirectory + "/master",
+      "LN_Reference_" + frameGroup.folderName( false ) + ".xisf" );
+   engine.imageProcessor.writeImage( filePath, [ win ], [ "integration" ] );
+   try { win.forceClose(); } catch ( e ) {}
+
+   frameGroup.__ln_reference_frame__ = filePath;
+   engine.processLogger.addSuccess( "Local normalization",
+      "reference frame generated by integrating " + cap.frames.length + " frames [cluster]" );
+   operation.statusMessage = "reference integrated  [cluster]";
+   return filePath;
+}
+
+// Batch the consecutive LN-reference ops: each op's inner LN runs locally in turn,
+// its reference integration is leased to the cluster; the server integrates its own
+// share natively while the cluster works.
+function dispatchLNRefBatch( engine, bridge, batch, env, ri )
+{
+   var nWorkers = bridge.__nWorkers || 1, machines = nWorkers + 1, load = [];
+   for ( var m = 0; m < machines; ++m ) load.push( 0 );
+   for ( var i = 0; i < batch.length; ++i )
+      batch[ i ].__nFrames = batch[ i ].group.activeFrames().length;
+   var order = batch.slice().sort( function( a, b ) { return b.__nFrames - a.__nFrames; } );
+   for ( var i = 0; i < order.length; ++i )
+   {
+      var best = 0, bestLoad = load[ 0 ] * 0.7;   // server cheaper (no transfer)
+      for ( var m = 1; m < machines; ++m )
+         if ( load[ m ] < bestLoad ) { best = m; bestLoad = load[ m ]; }
+      order[ i ].__machine = best;
+      load[ best ] += order[ i ].__nFrames;
+   }
+
+   var T = new ElapsedTime, handles = [], nLocal = 0, nCluster = 0;
+   for ( var i = 0; i < batch.length; ++i )
+   {
+      var op = batch[ i ];
+      if ( op.__machine == 0 )
+         continue;
+      try
+      {
+         var cap = captureLNRefII( engine, op, env, ri );
+         var outTmp = __makeTempDir( "lnref-" + i );
+         var h = bridge.distributeAsync( { inputs: cap.frames, op: "light_integration",
+            process_source: cap.source, shared_files: cap.companions,
+            out_dir: outTmp, postfix: "", out_ext: ".xisf", whole_job: true } );
+         handles.push( { op: op, handle: h, cap: cap } );
+         nCluster++;
+      }
+      catch ( e )
+      {
+         __clusterLog( "⚠ LN reference capture failed (" + e.message + ") — local" );
+         op.__clusterStatus = op.__origRun.call( op, env, ri );
+         op.__clusterDone = true; nLocal++;
+      }
+   }
+   for ( var i = 0; i < batch.length; ++i )
+      if ( batch[ i ].__machine == 0 && !batch[ i ].__clusterDone )
+      {
+         batch[ i ].__clusterStatus = batch[ i ].__origRun.call( batch[ i ], env, ri );
+         batch[ i ].__clusterDone = true; nLocal++;
+      }
+   for ( var j = 0; j < handles.length; ++j )
+   {
+      var cop = handles[ j ].op;
+      try
+      {
+         var vo = __verifiedOutputs( bridge.distributeWait( handles[ j ].handle ) );
+         if ( vo.length == 0 )
+            throw new Error( "no reference result" );
+         finalizeLNReference( engine, cop, vo, handles[ j ].cap );
+         cop.__clusterStatus = OperationBlockStatus.DONE;
+      }
+      catch ( e )
+      {
+         __clusterLog( "⚠ LN reference client failed (" + e.message + ") — local" );
+         cop.__clusterStatus = cop.__origRun.call( cop, env, ri );
+      }
+      cop.__clusterDone = true;
+   }
+   __clusterLog( "✓ LN reference : " + batch.length + " reference(s) — " + nLocal + " local ∥ " +
+      nCluster + " cluster in " + T.value.toFixed( 1 ) + "s" );
+}
+
+function distributeLNRefBatch( engine, firstOp, bridge, env, ri )
+{
+   var batch = gatherLNRefBatch( engine, firstOp );
+   if ( batch.length <= 1 || ( bridge.__nWorkers || 0 ) < 1 )
+      return firstOp.__origRun.call( firstOp, env, ri );
+   dispatchLNRefBatch( engine, bridge, batch, env, ri );
+   return firstOp.__clusterStatus;
 }
 
 // Lease the final per-filter LIGHT integrations across the cluster (whole-jobs).

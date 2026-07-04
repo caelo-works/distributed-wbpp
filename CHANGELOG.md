@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-04
+
+### Added
+- **The LN reference generation is now distributed** (one whole-job per filter group).
+  The inner local normalization of the best frames still runs natively on the server
+  (its bookkeeping untouched — the capture decoy lets the first process through), and
+  the reference ImageIntegration that follows is captured and leased to a worker,
+  reusing the light-integration worker path (.xnml companions, no rejection maps).
+  The finalized LN_Reference master is wired back through the group's in-memory
+  reference so the local-normalization operations consume it natively. The interactive
+  reference-selection mode is untouched (different operation name).
+
+### Validation
+- Real 2-node LAN run: 15/15 masters (LN_Reference included) pixel-identical to the
+  local baseline (max |difference| = 0).
+
 ## [1.2.0] - 2026-07-04
 
 ### Added
@@ -93,7 +109,8 @@ All notable changes to this project are documented here. The format is based on
   reproducible release artifact (`build-update-package.sh`).
 - Verified on PixInsight 1.9.3 / WBPP 2.9.1 (see [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)).
 
-[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/caelo-works/distributed-wbpp/compare/v1.0.0...v1.0.1
