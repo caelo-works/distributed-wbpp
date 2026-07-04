@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-04
+
+### Added
+- **The final LIGHT integrations are now distributed** (one whole-job per filter group),
+  attacking the pipeline's largest remaining serial tail. The captured ImageIntegration
+  travels with its per-frame drizzle/local-normalization companions; the worker returns
+  the integration bundle (with embedded rejection maps) plus the updated `.xdrz` files,
+  and the server finalizes the master exactly like WBPP's own `doIntegrate` (naming,
+  keywords, signature, in-memory group wiring) so autocrop and the astrometric solution
+  run natively on it.
+- Autocrop and the astrometric solution intentionally stay **local**: autocrop is a
+  single global operation that crops all filters to the intersection of their crop
+  rectangles, and plate-solving depends on a per-node Gaia XPSD database / network
+  catalog.
+
+### Validation
+- Real 2-node LAN run: all 15 masters (including `_autocrop`) pixel-identical to a
+  local-only baseline (max |difference| = 0); pipeline 369.3s vs 632.3s local (1.7x
+  with one helper).
+
 ## [1.1.0] - 2026-07-03
 
 ### Added
@@ -73,7 +93,8 @@ All notable changes to this project are documented here. The format is based on
   reproducible release artifact (`build-update-package.sh`).
 - Verified on PixInsight 1.9.3 / WBPP 2.9.1 (see [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)).
 
-[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/caelo-works/distributed-wbpp/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/caelo-works/distributed-wbpp/releases/tag/v1.0.0

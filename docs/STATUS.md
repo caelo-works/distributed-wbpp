@@ -44,7 +44,11 @@ Measured results (30 lights, 1 worker): `calib integration 1 local ∥ 2 cluster
 (vs ~79 s), `flat integration 2 local ∥ 1 cluster ≈ 67 s`. Drops further with a 3rd PC.
 
 ### Stays **local** (by choice)
-- **Final light integration** (reduction of the largest frames → transfer-bound).
+- ~~Final light integration~~ — **distributed since v1.2.0** (one whole-job per
+  filter group, drizzle/LN companions shipped, rejection maps embedded).
+- **Autocrop** (single global op: crops all filters to the intersection of their
+  crop rects — must see every master).
+- **Astrometric solution** (needs a per-node Gaia XPSD database / network catalog).
 - **Astrometric solution** (~fixed cost, ~30 s of potential gain, but deep coupling
   to `ImageSolver` + catalogs + risk of a blocking dialog → not worthwhile).
 - Generation of the flat masters is **itself** distributed; their **calibration** stays local.

@@ -4,7 +4,7 @@
 
 ### Run PixInsight's Weighted Batch Preprocessing across every PC on your network
 
-[![Version](https://img.shields.io/badge/version-1.0.0-22d3ee?style=for-the-badge&labelColor=0f172a)](https://github.com/caelo-works/distributed-wbpp/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.2.0-22d3ee?style=for-the-badge&labelColor=0f172a)](https://github.com/caelo-works/distributed-wbpp/releases/latest)
 [![PixInsight](https://img.shields.io/badge/PixInsight-%E2%89%A5%201.9.0-67e8f9?style=for-the-badge&labelColor=0f172a)](https://pixinsight.com/)
 [![Status](https://img.shields.io/badge/status-beta-fbbf24?style=for-the-badge&labelColor=0f172a)](https://pixinsight-scripts.caelo.works/en/scripts/distributed-wbpp)
 [![License](https://img.shields.io/badge/license-GPL--3.0-94a3b8?style=for-the-badge&labelColor=0f172a)](LICENSE)
@@ -88,7 +88,7 @@ WBPP**. Install it on **every PC** you want in the cluster.
 1. On each **helper** PC, run **Script → Batch Processing → Distributed WBPP** and pick **Client** — leave the window open; it discovers the server and processes the shards it's handed.
 2. On the machine you **drive from**, run it and pick **Server** — the **native WBPP dialog** opens.
 3. Add your frames and configure everything as usual, then click **Run**. A dashboard lists the connected clients and the live **server ∥ cluster** split; WBPP's own Execution Monitor tags each distributed row.
-4. When helpers are present the heavy steps are distributed automatically; the final light integration is assembled locally on the server.
+4. When helpers are present the heavy steps are distributed automatically — including the final per-filter light integrations; autocrop and the astrometric solution run locally on the server.
 
 Nothing changes in your usual WBPP habit — the single addition is starting the same
 script in **Client** mode on the other PCs.
@@ -96,7 +96,7 @@ script in **Client** mode on the other PCs.
 ## How it works
 
 The server runs the native WBPP pipeline; a version-pinned shim grafts distribution
-onto it, splitting the heavy work over the cluster while the final assembly stays local.
+onto it, splitting the heavy work over the cluster.
 PJSR can only act as a network *client* and cannot discover peers, so a small bundled
 companion — the **sidecar** (a single static executable per OS, no runtime) — does the
 LAN work.
@@ -112,10 +112,12 @@ Two complementary distribution models:
 | Model | Steps | How |
 |---|---|---|
 | **Per-frame** (intra-group split) | Calibration · Measurements · Registration · Local Normalization | each group's frames are split server ∥ cluster **adaptively** (measured per-machine cost, transfer included) |
-| **Whole-job** (job assignment) | Calibration **master integrations** (bias / dark / flat) | each indivisible integration is leased to one free worker while the server integrates its share in parallel |
+| **Whole-job** (job assignment) | Calibration **master integrations** (bias / dark / flat) · **final light integrations** (one per filter) | each indivisible integration is leased to one free worker while the server integrates its share in parallel |
 
-Cheap and transfer-bound / fixed-cost steps (final light integration, astrometric
-solution) stay **local** on purpose. Correctness is enforced by the version handshake
+The final per-filter **light integrations are distributed too** (whole-jobs, with their
+drizzle/local-normalization companions). Autocrop and the astrometric solution stay
+**local** on purpose (global cross-filter crop intersection; per-node star-catalog
+dependency). Correctness is enforced by the version handshake
 and was validated **bit-identically** against a local run.
 
 ---
@@ -199,9 +201,9 @@ release** (the hand-off point the site pulls from):
 - The shim monkey-patches WBPP's engine, so a major WBPP refactor can require a version
   bump (surface is minimal + version-pinned, with a safe **local fallback** when the
   version is unknown or anything fails — never a silently wrong result).
-- Final **ImageIntegration** of the lights and the **astrometric solution** stay local (a
-  reduction of the largest frames / a fixed cost that doesn't scale with the dataset). The
-  speedup ceiling is set by these local tails.
+- **Autocrop** and the **astrometric solution** stay local (global cross-filter crop
+  intersection; per-node star-catalog dependency). The speedup ceiling is set by these
+  remaining local steps and by the transfer of the registered frames.
 - PixInsight must be licensed + installed on every node, all at the **same version** as WBPP.
 
 See [`docs/STATUS.md`](docs/STATUS.md) for the detailed state and

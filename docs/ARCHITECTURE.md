@@ -40,7 +40,7 @@ Determinism is guaranteed by a **strict version handshake**: identical PixInsigh
                  │   • runs it (calib / SA / LN / SS / II)      │
                  │   • returns outputs (frames / metrics / master)│
                  └──────────────────────────────────────────────┘
-        final light ImageIntegration + astrometry = LOCAL on the server
+        final light integrations = distributed per filter; autocrop + astrometry = LOCAL
 ```
 
 ## Two distribution models

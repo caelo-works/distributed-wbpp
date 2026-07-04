@@ -366,22 +366,26 @@ function wrapCalibIntegration( engine, bridge )
    q.addOperation = function( operation, params )
    {
       if ( operation && operation.name == "Integration" && operation.group
-           && typeof ImageType != "undefined" && operation.group.imageType != ImageType.Light )
+           && typeof ImageType != "undefined" )
       {
          operation.__origRun = operation.run;
          operation.run = function( env, ri )
          {
             if ( operation.__clusterDone )                 // computed as part of a batch
                return operation.__clusterStatus;
+            var isLight = ( operation.group.imageType == ImageType.Light );
             var isFlat = ( operation.group.imageType == ImageType.Flat );
+            var kind = isLight ? "lights" : ( isFlat ? "flats" : "calib" );
             try
             {
+               if ( isLight )
+                  return distributeLightBatch( engine, operation, bridge, env, ri );
                return isFlat ? distributeFlatBatch( engine, operation, bridge, env, ri )
                              : distributeCalibBatch( engine, operation, bridge, env, ri );
             }
             catch ( e )
             {
-               __clusterLog( "⚠ integration " + ( isFlat ? "flats" : "calib" ) + ": local fallback (" + e.message + ")" );
+               __clusterLog( "⚠ integration " + kind + ": local fallback (" + e.message + ")" );
                return operation.__origRun.call( operation, env, ri );
             }
          };
@@ -433,7 +437,29 @@ function captureII( engine, operation, env, ri )
    var frames = [], af = operation.group.activeFrames();
    for ( var i = 0; i < af.length; ++i )
       frames.push( af[ i ].current );
-   return { source: serializeProcess( captured, "II" ), frames: frames };
+   // per-frame companion files from the captured 4-column rows [enabled, path, xdrz, xnml]
+   // (calib integrations have 2-column rows -> none). Shipped as shared_files: a whole-job
+   // is leased to exactly ONE worker, so "shared" degenerates to a single upload.
+   var companions = [], xdrzByBase = {};
+   try
+   {
+      var rows = captured.images;
+      for ( var r = 0; r < rows.length; ++r )
+      {
+         var dz = ( rows[ r ].length > 2 ) ? String( rows[ r ][ 2 ] ) : "";
+         var ln = ( rows[ r ].length > 3 ) ? String( rows[ r ][ 3 ] ) : "";
+         if ( dz.length > 0 && File.exists( dz ) )
+         {
+            companions.push( dz );
+            xdrzByBase[ File.extractNameAndExtension( dz ) ] = dz;
+         }
+         if ( ln.length > 0 && File.exists( ln ) )
+            companions.push( ln );
+      }
+   }
+   catch ( e ) {}
+   return { source: serializeProcess( captured, "II" ), frames: frames,
+            companions: companions, xdrzByBase: xdrzByBase };
 }
 
 // finalize a client-integrated image into a WBPP master (keywords + naming + save)
@@ -486,10 +512,13 @@ function dispatchIntegrationBatch( engine, bridge, batch, env, ri, label )
       try
       {
          var cap = captureII( engine, op, env, ri );
+         var isLight = ( op.group.imageType == ImageType.Light );
          var outTmp = __makeTempDir( "integ-" + i );
-         var h = bridge.distributeAsync( { inputs: cap.frames, op: "integration", process_source: cap.source,
+         var h = bridge.distributeAsync( { inputs: cap.frames,
+            op: isLight ? "light_integration" : "integration", process_source: cap.source,
+            shared_files: isLight ? cap.companions : [],
             out_dir: outTmp, postfix: "", out_ext: ".xisf", whole_job: true } );
-         handles.push( { op: op, handle: h } );
+         handles.push( { op: op, handle: h, cap: cap, isLight: isLight } );
          nCluster++;
       }
       catch ( e )
@@ -513,9 +542,14 @@ function dispatchIntegrationBatch( engine, bridge, batch, env, ri, label )
          var vo = __verifiedOutputs( bridge.distributeWait( handles[ j ].handle ) );
          if ( vo.length == 0 )
             throw new Error( "no integrated result" );
-         var master = finalizeMaster( engine, cop.group, vo[ vo.length - 1 ].path );
-         engine.addFile( master );
-         cop.statusMessage = cop.__nFrames + " integrated  [cluster]";
+         if ( handles[ j ].isLight )
+            finalizeLightMaster( engine, cop, vo, handles[ j ].cap );
+         else
+         {
+            var master = finalizeMaster( engine, cop.group, vo[ vo.length - 1 ].path );
+            engine.addFile( master );
+            cop.statusMessage = cop.__nFrames + " integrated  [cluster]";
+         }
          cop.__clusterStatus = OperationBlockStatus.DONE;
       }
       catch ( e )
@@ -527,6 +561,150 @@ function dispatchIntegrationBatch( engine, bridge, batch, env, ri, label )
    }
    __clusterLog( "✓ " + label + " : " + batch.length + " master(s) — " + nLocal + " local ∥ " +
       nCluster + " cluster in " + T.value.toFixed( 1 ) + "s" );
+}
+
+/*
+ * gatherLightBatch — consecutive LIGHT Integration ops (one per filter group)
+ * starting at firstOp, skipping WBPP's unnamed log blocks. Stops at any other
+ * named op (Autocrop is the natural boundary). Fast Integration groups have a
+ * different op name and COMBINED_RGB groups get no "Integration" op, so both
+ * are naturally excluded.
+ */
+function gatherLightBatch( engine, firstOp )
+{
+   var ops = engine.operationQueue.operations, batch = [];
+   for ( var i = firstOp.__index__; i < ops.length; ++i )
+   {
+      var op = ops[ i ].operation;
+      if ( op.name == "Integration" && op.group && op.group.imageType == ImageType.Light )
+      {
+         if ( op.group.fastIntegrationData && op.group.fastIntegrationData.enabled )
+            break;                        // fast-integration flows stay native
+         var af = op.group.activeFrames();
+         if ( af.length < 3 )
+            break;                        // native handles the <3-frames refusal
+         var ready = true;
+         for ( var k = 0; k < af.length; ++k )
+            if ( !File.exists( af[ k ].current ) ) { ready = false; break; }
+         if ( !ready )
+            break;
+         batch.push( op );
+      }
+      else if ( op.name && op.name.length > 0 )
+         break;         // a real named op (Autocrop, ...) => the batch boundary
+      // else: unnamed log block => skip and keep scanning
+   }
+   return batch;
+}
+
+/*
+ * finalizeLightMaster — turn a worker's raw integration bundle into the exact
+ * master WBPP's own doIntegrate would have produced, and wire the group state:
+ *   - outputs: one .xisf (integration + embedded rejection maps) + the UPDATED
+ *     .xdrz drizzle files (only those the integration actually touched);
+ *   - copy the updated .xdrz over the server originals (drizzle integration and
+ *     autocrop read them from disk);
+ *   - write the master with WBPP naming/keywords/signature into out/master and
+ *     register it in-memory via frameGroup.setMasterFileName (autocrop +
+ *     astrometry read that);
+ *   - replicate the native drizzle bookkeeping: frames whose .xdrz was NOT
+ *     updated are marked processingFailed (BPP-operations.js light _run).
+ */
+function finalizeLightMaster( engine, operation, vo, cap )
+{
+   var frameGroup = operation.group;
+
+   // split the outputs: the single .xisf bundle vs updated .xdrz files
+   var bundlePath = null, updatedXdrz = {};
+   for ( var i = 0; i < vo.length; ++i )
+   {
+      var nm = File.extractNameAndExtension( vo[ i ].path );
+      if ( /\.xisf$/i.test( nm ) )
+         bundlePath = vo[ i ].path;
+      else if ( /\.xdrz$/i.test( nm ) )
+         updatedXdrz[ nm ] = vo[ i ].path;
+   }
+   if ( !bundlePath )
+      throw new Error( "no master bundle in the outputs" );
+
+   // 1) copy updated drizzle files over the originals (basename-matched)
+   var nXdrz = 0;
+   for ( var base in updatedXdrz )
+      if ( updatedXdrz.hasOwnProperty( base ) && cap.xdrzByBase[ base ] )
+      {
+         try
+         {
+            if ( File.exists( cap.xdrzByBase[ base ] ) )
+               File.remove( cap.xdrzByBase[ base ] );
+            File.copyFile( cap.xdrzByBase[ base ], updatedXdrz[ base ] );
+            nXdrz++;
+         }
+         catch ( e ) { console.warningln( "** Distributed-WBPP: xdrz copy-back failed: " + e.message ); }
+      }
+
+   // 2) open the bundle (integration [+ rejection_low [+ rejection_high]])
+   var wins = ImageWindow.open( bundlePath );
+   if ( !( wins instanceof Array ) )
+      wins = [ wins ];
+   var win = wins[ 0 ], lowWin = ( wins.length > 1 ) ? wins[ 1 ] : null,
+       highWin = ( wins.length > 2 ) ? wins[ 2 ] : null;
+
+   // 3) keywords + signature + filter property, exactly like doIntegrate
+   var keywords = [
+      new FITSKeyword( "COMMENT", "", "PixInsight image preprocessing pipeline" ),
+      new FITSKeyword( "COMMENT", "", "Master frame generated with " + engine.title + " v" + engine.version ),
+      new FITSKeyword( "IMAGETYP", StackEngine.imageTypeToMasterKeywordValue( frameGroup.imageType ), "Type of image" ),
+      new FITSKeyword( "XBINNING", format( "%d", frameGroup.binning ), "Binning factor, horizontal axis" ),
+      new FITSKeyword( "YBINNING", format( "%d", frameGroup.binning ), "Binning factor, vertical axis" ),
+      new FITSKeyword( "FILTER", frameGroup.filter, "Filter used when taking image" ),
+      new FITSKeyword( "EXPTIME", format( "%.3f", frameGroup.exposureTime ), "Exposure time in seconds" )
+   ];
+   var uniq = [ "IMAGETYP", "XBINNING", "YBINNING", "FILTER", "EXPTIME" ];
+   engine.imageProcessor.generateSignatureProperty( win );
+   engine.imageProcessor.setImagePropertyString( win, "Instrument:Filter:Name", frameGroup.filter );
+   win.keywords = keywords.concat( win.keywords.filter( function( k ) { return uniq.indexOf( k.name ) == -1; } ) );
+
+   // 4) write with WBPP naming; the high rejection map is embedded only when the
+   //    engine embeds rejection maps (doIntegrate: II.clipHigh && embedRejectionMaps)
+   var filePath = WBPPUtils.existingAndUniqueFileName( engine.outputDirectory + "/master",
+      "master" + frameGroup.folderName( false ) + ".xisf" );
+   var outWins = [ win ], outIds = [ "integration" ];
+   if ( lowWin != null ) { outWins.push( lowWin ); outIds.push( "rejection_low" ); }
+   if ( highWin != null && engine.generateRejectionMaps ) { outWins.push( highWin ); outIds.push( "rejection_high" ); }
+   engine.imageProcessor.writeImage( filePath, outWins, outIds );
+   for ( var w = 0; w < wins.length; ++w )
+      try { wins[ w ].forceClose(); } catch ( e ) {}
+
+   // 5) in-memory wiring + native drizzle bookkeeping
+   frameGroup.setMasterFileName( filePath );
+   var af = frameGroup.activeFrames();
+   if ( frameGroup.isDrizzleEnabled() )
+      for ( var f = 0; f < af.length; ++f )
+      {
+         var dz = af[ f ].drizzleFile;
+         if ( dz != undefined && !updatedXdrz[ File.extractNameAndExtension( dz ) ] )
+         {
+            af[ f ].processingFailed();
+            console.writeln( "Drizzle data for frame <raw>" + af[ f ].fileItem.filePath + "</raw> has not been updated." );
+         }
+      }
+   engine.processLogger.addSuccess( "Integration completed", "master Light saved at path " + filePath + " [cluster]" );
+   operation.statusMessage = operation.__nFrames + " integrated  [cluster]" +
+      ( nXdrz > 0 ? ( ", " + nXdrz + " xdrz updated" ) : "" );
+   return filePath;
+}
+
+// Lease the final per-filter LIGHT integrations across the cluster (whole-jobs).
+// Autocrop and the astrometric solution stay LOCAL by design: autocrop is a single
+// global op that crops all filters to the intersection of their crop rects, and
+// plate-solving needs a per-node Gaia XPSD database / network catalog.
+function distributeLightBatch( engine, firstOp, bridge, env, ri )
+{
+   var batch = gatherLightBatch( engine, firstOp );
+   if ( batch.length <= 1 || ( bridge.__nWorkers || 0 ) < 1 )
+      return firstOp.__origRun.call( firstOp, env, ri );
+   dispatchIntegrationBatch( engine, bridge, batch, env, ri, "integration lights" );
+   return firstOp.__clusterStatus;
 }
 
 function distributeCalibBatch( engine, firstOp, bridge, env, ri )

@@ -28,7 +28,7 @@ function opLabel( op )
 {
    var m = { calibration: "calibration", registration: "registration",
              localnorm: "local normalization", measurements: "measurements",
-             integration: "integration" };
+             integration: "integration", light_integration: "light integration" };
    return m[ op ] || ( op || "processing" );
 }
 
@@ -120,13 +120,35 @@ function measureFrames( bridge, job )
  */
 function integrateFrames( bridge, job )
 {
+   var isLight = ( job.op == "light_integration" );
    var II = deserializeProcess( job.process_source, "II" );
-   var imgs = [];
+
+   // rebuild the images rows against the local uploaded copies. For LIGHTS the rows
+   // carry the per-frame companions [enabled, path, .xdrz, .xnml] — shipped via
+   // shared_files (single leased worker) and matched here by basename.
+   var imgs = [], xdrzPaths = [], lmdBefore = {};
    for ( var i = 0; i < job.input_names.length; ++i )
-      imgs.push( [ true, bridge.dataDir + "/" + job.input_names[ i ], "", "" ] ); // [enabled, path, drizzle, LN]
+   {
+      var path = bridge.dataDir + "/" + job.input_names[ i ];
+      var dz = "", ln = "";
+      if ( isLight )
+      {
+         var stem = bridge.dataDir + "/" + File.extractName( job.input_names[ i ] );
+         if ( File.exists( stem + ".xdrz" ) )
+         {
+            dz = stem + ".xdrz";
+            xdrzPaths.push( dz );
+            lmdBefore[ dz ] = WBPPUtils.getLastModifiedDate( dz );
+         }
+         if ( File.exists( stem + ".xnml" ) )
+            ln = stem + ".xnml";
+      }
+      imgs.push( [ true, path, dz, ln ] ); // [enabled, path, drizzle, LN]
+   }
    II.images = imgs;
    II.showImages = false;
-   try { II.generateDrizzleData = false; } catch ( e ) {}
+   if ( !isLight )
+      try { II.generateDrizzleData = false; } catch ( e ) {}
 
    if ( !II.executeGlobal() )
       throw new Error( "ImageIntegration failed" );
@@ -134,21 +156,39 @@ function integrateFrames( bridge, job )
    var win = ImageWindow.windowById( II.integrationImageId );
    if ( !win || win.isNull )
       throw new Error( "no integration window (" + II.integrationImageId + ")" );
+   var lowWin = null, highWin = null;
+   try { var lw = ImageWindow.windowById( II.lowRejectionMapImageId ); if ( lw && !lw.isNull ) lowWin = lw; } catch ( e ) {}
+   try { var hw = ImageWindow.windowById( II.highRejectionMapImageId ); if ( hw && !hw.isNull ) highWin = hw; } catch ( e ) {}
 
    var outName = "integration-" + job.job_id + ".xisf";
-   win.saveAs( bridge.dataDir + "/" + outName, false /*queryOpts*/, false /*allowMsgs*/, false /*strict*/, false /*noOverwrite -> allow*/ );
+   var outputs = [ { input: "__integration__", output: outName } ];
+   if ( isLight )
+   {
+      // bundle integration + rejection maps exactly like WBPP's doIntegrate does
+      // (the server-side autocrop reads the embedded maps from the master file)
+      var wins = [ win ], ids = [ "integration" ];
+      if ( lowWin != null ) { wins.push( lowWin ); ids.push( "rejection_low" ); }
+      if ( highWin != null ) { wins.push( highWin ); ids.push( "rejection_high" ); }
+      engine.imageProcessor.writeImage( bridge.dataDir + "/" + outName, wins, ids );
+      // return the drizzle files the integration actually updated
+      for ( var d = 0; d < xdrzPaths.length; ++d )
+         if ( WBPPUtils.getLastModifiedDate( xdrzPaths[ d ] ) != lmdBefore[ xdrzPaths[ d ] ] )
+            outputs.push( { input: "__xdrz__", output: File.extractNameAndExtension( xdrzPaths[ d ] ) } );
+   }
+   else
+      win.saveAs( bridge.dataDir + "/" + outName, false /*queryOpts*/, false /*allowMsgs*/, false /*strict*/, false /*noOverwrite -> allow*/ );
+
    win.forceClose();
-   // free rejection-map windows if any were produced
-   try { var lw = ImageWindow.windowById( II.lowRejectionMapImageId ); if ( lw && !lw.isNull ) lw.forceClose(); } catch ( e ) {}
-   try { var hw = ImageWindow.windowById( II.highRejectionMapImageId ); if ( hw && !hw.isNull ) hw.forceClose(); } catch ( e ) {}
-   return [ { input: "__integration__", output: outName } ];
+   if ( lowWin != null ) try { lowWin.forceClose(); } catch ( e ) {}
+   if ( highWin != null ) try { highWin.forceClose(); } catch ( e ) {}
+   return outputs;
 }
 
 function processJob( bridge, job )
 {
    if ( job.op == "measurements" )
       return measureFrames( bridge, job );
-   if ( job.op == "integration" )
+   if ( job.op == "integration" || job.op == "light_integration" )
       return integrateFrames( bridge, job );
 
    var P;
