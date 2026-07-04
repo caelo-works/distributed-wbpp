@@ -28,7 +28,7 @@ function opLabel( op )
 {
    var m = { calibration: "calibration", registration: "registration",
              localnorm: "local normalization", measurements: "measurements",
-             integration: "integration", light_integration: "light integration" };
+             integration: "integration", light_integration: "light integration", drizzle_integration: "drizzle integration" };
    return m[ op ] || ( op || "processing" );
 }
 
@@ -37,6 +37,15 @@ function ensureDirectory( path )
 {
    if ( !File.directoryExists( path ) )
       File.createDirectory( path, true );
+}
+
+// Last path component, tolerant of both / and \ separators (paths embedded in a
+// .xdrz may come from any machine's filesystem).
+function baseNameOf( p )
+{
+   var s = String( p ).replace( /\\/g, "/" );
+   var i = s.lastIndexOf( "/" );
+   return ( i >= 0 ) ? s.substring( i + 1 ) : s;
 }
 
 /*
@@ -118,6 +127,64 @@ function measureFrames( bridge, job )
  * assigned to one machine; parallelism comes from running independent integrations
  * (bias/dark/flat) on different machines at once.
  */
+/*
+ * drizzleIntegrate — DrizzleIntegration shard (whole-job per filter). The .xdrz
+ * files arrive as inputs; the calibrated source images (referenced in each .xdrz)
+ * and the .xnml files arrive as shared_files. DI.inputDirectory = dataDir makes DI
+ * resolve the source images (and any path it can't find) by basename in dataDir, so
+ * the .xdrz keep their original absolute <SourceImage> paths untouched. Returns the
+ * 2-image drizzle bundle (integration + weights); the server finalizes it.
+ */
+function drizzleIntegrate( bridge, job )
+{
+   var DI = deserializeProcess( job.process_source, "DI" );
+   var rows = [];
+   for ( var i = 0; i < job.input_names.length; ++i )
+   {
+      var xdrz = bridge.dataDir + "/" + job.input_names[ i ];
+      var stem = bridge.dataDir + "/" + File.extractName( job.input_names[ i ] );  // basename, no .xdrz
+
+      // A .xdrz embeds the ABSOLUTE path of its source (calibrated) and alignment-target
+      // (registered) images — on the server, or on whichever worker registered the frame.
+      // DrizzleIntegration reads those paths verbatim (inputDirectory does NOT remap them),
+      // so rewrite them to this worker's local uploaded copies before integrating. The
+      // .xdrz is pure XML text (base64 payload), so a targeted rewrite round-trips safely.
+      try
+      {
+         var txt = File.readTextFile( xdrz );
+         txt = txt.replace( /<SourceImage>([^<]*)<\/SourceImage>/,
+            function ( _, p ) { return "<SourceImage>" + bridge.dataDir + "/" + baseNameOf( p ) + "</SourceImage>"; } );
+         txt = txt.replace( /<AlignmentTargetImage>([^<]*)<\/AlignmentTargetImage>/,
+            function ( _, p ) { return "<AlignmentTargetImage>" + bridge.dataDir + "/" + baseNameOf( p ) + "</AlignmentTargetImage>"; } );
+         File.writeTextFile( xdrz, txt );
+      }
+      catch ( e ) { throw new Error( "xdrz path rewrite failed: " + e.message ); }
+
+      var ln = File.exists( stem + ".xnml" ) ? ( stem + ".xnml" ) : "";
+      rows.push( [ true, xdrz, ln ] );
+   }
+   DI.inputData = rows;
+   DI.inputDirectory = bridge.dataDir;  // belt-and-suspenders (source paths are already local)
+   DI.showImages = false;
+
+   if ( !DI.executeGlobal() )
+      throw new Error( "DrizzleIntegration failed" );
+
+   var win = ImageWindow.windowById( DI.integrationImageId );
+   if ( !win || win.isNull )
+      throw new Error( "no drizzle window (" + DI.integrationImageId + ")" );
+   var weight = null;
+   try { var w = ImageWindow.windowById( DI.weightImageId ); if ( w && !w.isNull ) weight = w; } catch ( e ) {}
+
+   var outName = "drizzle-" + job.job_id + ".xisf";
+   var wins = [ win ], ids = [ "drizzle_integration" ];
+   if ( weight != null ) { wins.push( weight ); ids.push( "drizzle_weights" ); }
+   engine.imageProcessor.writeImage( bridge.dataDir + "/" + outName, wins, ids );
+   win.forceClose();
+   if ( weight != null ) try { weight.forceClose(); } catch ( e ) {}
+   return [ { input: "__drizzle__", output: outName } ];
+}
+
 function integrateFrames( bridge, job )
 {
    var isLight = ( job.op == "light_integration" );
@@ -190,6 +257,8 @@ function processJob( bridge, job )
       return measureFrames( bridge, job );
    if ( job.op == "integration" || job.op == "light_integration" )
       return integrateFrames( bridge, job );
+   if ( job.op == "drizzle_integration" )
+      return drizzleIntegrate( bridge, job );
 
    var P;
    if ( job.process_source && job.process_source.length > 0 )
@@ -216,7 +285,9 @@ function processJob( bridge, job )
    var prefix  = ( typeof job.output_prefix == "string" ) ? job.output_prefix : "";
    var postfix = ( typeof job.output_postfix == "string" ) ? job.output_postfix : "_r";
    var ext     = ( typeof job.output_ext == "string" && job.output_ext.length ) ? job.output_ext : ".xisf";
-   P.outputDirectory = bridge.dataDir;
+   // most ops expose "outputDirectory"; the manifest may name a different field.
+   try { P[ ( job.dir_field && job.dir_field.length ) ? job.dir_field : "outputDirectory" ] = bridge.dataDir; } catch ( e ) {}
+   try { P.outputDirectory = bridge.dataDir; } catch ( e ) {}
    try { P.outputPrefix = prefix; } catch ( e ) {}
    try { P.outputPostfix = postfix; } catch ( e ) {}
    try { P.outputExtension = ext; } catch ( e ) {}

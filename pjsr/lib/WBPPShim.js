@@ -246,6 +246,7 @@ function installShim( engine, bridge, options )
    if ( options.calibIntegration !== false )
       wrapCalibIntegration( engine, bridge );
       wrapLNReference( engine, bridge );
+      wrapDrizzleIntegration( engine, bridge );
 
    return { active: true, reason: "ok", workers: workers.length, operations: enabled };
 }
@@ -907,6 +908,272 @@ function distributeLNRefBatch( engine, firstOp, bridge, env, ri )
    return firstOp.__clusterStatus;
 }
 
+/*
+ * -------- Drizzle integration (per filter, whole-job) ------------------------
+ * DrizzleIntegration re-projects the CALIBRATED source frames using the alignment
+ * stored in each .xdrz. Inputs on the worker: the .xdrz files, the .xnml (if LN),
+ * and the calibrated source images each .xdrz references in <SourceImage>. We ship
+ * all of them; the worker sets DI.inputDirectory to its data dir so DI resolves the
+ * source images and companions by basename (no XML rewriting). It runs BEFORE
+ * autocrop (which then crops the drizzle master locally). Requires the regular
+ * master light (already produced, distributed in v1.2), so it is a leaf whole-job.
+ */
+function wrapDrizzleIntegration( engine, bridge )
+{
+   var q = engine.operationQueue;
+   if ( !q || q.__wbppDrizzleWrapped )
+      return;
+   q.__wbppDrizzleWrapped = true;
+   var inner = q.addOperation;
+   q.addOperation = function( operation, params )
+   {
+      if ( operation && operation.name && operation.name.indexOf( "Drizzle Integration" ) == 0 && operation.group )
+      {
+         operation.__origRun = operation.run;
+         operation.run = function( env, ri )
+         {
+            if ( operation.__clusterDone )
+               return operation.__clusterStatus;
+            try
+            {
+               return distributeDrizzleBatch( engine, operation, bridge, env, ri );
+            }
+            catch ( e )
+            {
+               __clusterLog( "⚠ drizzle: local fallback (" + e.message + ")" );
+               return operation.__origRun.call( operation, env, ri );
+            }
+         };
+      }
+      return inner.call( q, operation, params );
+   };
+}
+
+function gatherDrizzleBatch( engine, firstOp )
+{
+   var ops = engine.operationQueue.operations, batch = [];
+   for ( var i = firstOp.__index__; i < ops.length; ++i )
+   {
+      var op = ops[ i ].operation;
+      if ( op.name && op.name.indexOf( "Drizzle Integration" ) == 0 && op.group )
+      {
+         if ( !op.group.getMasterFileName || !op.group.getMasterFileName() || !File.exists( op.group.getMasterFileName() ) )
+            break;         // needs the regular master light first
+         batch.push( op );
+      }
+      else if ( op.name && op.name.length > 0 )
+         break;
+   }
+   return batch;
+}
+
+// Capture the configured DrizzleIntegration, extract the .xdrz + .xnml from
+// inputData, and the calibrated <SourceImage> each .xdrz references.
+function captureDrizzle( engine, operation, env, ri )
+{
+   var cap = __captureViaContainer( engine, function() { operation.__origRun.call( operation, env, ri ); } );
+   if ( cap.nativeErr )
+      throw cap.nativeErr;
+   var DI = cap.captured;
+   if ( !DI )
+      throw new Error( "DI not captured (cached/skipped)" );
+   if ( !( DI instanceof DrizzleIntegration ) )
+      throw new Error( "captured a non-DI process" );
+   var rows = DI.inputData;         // [enabled, xdrz, xnml]
+   var xdrz = [], companions = [];
+   for ( var r = 0; r < rows.length; ++r )
+   {
+      var dz = String( rows[ r ][ 1 ] );
+      var usesLN = ( rows[ r ].length > 2 ) && String( rows[ r ][ 2 ] ).length > 0;
+      if ( dz.length == 0 || !File.exists( dz ) )
+         continue;
+      xdrz.push( dz );
+
+      // Ship the SERVER-CANONICAL calibrated source and .xnml, derived from the .xdrz
+      // path — NOT the <SourceImage> path stored inside the .xdrz, which for frames
+      // registered on a worker points at that worker's data dir (missing here). The
+      // server holds every calibrated frame (own + downloaded), so the canonical copy
+      // is always present; the worker resolves it by basename via DI.inputDirectory.
+      var dzDir = File.extractDrive( dz ) + File.extractDirectory( dz );  // .../registered/<group>/
+      var stem  = File.extractName( dz );                                 // <frame>_c_r
+      var calDir = dzDir.replace( "/registered/", "/calibrated/" );
+      var calBase = stem.replace( /_r$/, "" );                            // <frame>_c
+      var calPath = calDir + "/" + calBase + ".xisf";
+      if ( !File.exists( calPath ) )
+      {
+         // fall back to the <SourceImage> basename located in the canonical calib dir
+         try
+         {
+            var m = File.readTextFile( dz ).match( /<SourceImage>([^<]+)<\/SourceImage>/ );
+            if ( m )
+               calPath = calDir + "/" + File.extractNameAndExtension( m[ 1 ] );
+         }
+         catch ( e ) {}
+      }
+      if ( File.exists( calPath ) )
+         companions.push( calPath );
+      else
+         __clusterLog( "⚠ drizzle: calibrated source missing for " + stem );
+
+      // the aligned frame (<AlignmentTargetImage>) — recorded in the .xdrz; ship it so
+      // the rewritten local path always resolves even if DI touches it.
+      var regPath = dzDir + "/" + stem + ".xisf";
+      if ( File.exists( regPath ) )
+         companions.push( regPath );
+
+      if ( usesLN )
+      {
+         var lnPath = dzDir + "/" + stem + ".xnml";  // .xnml lives beside the .xdrz
+         if ( File.exists( lnPath ) )
+            companions.push( lnPath );
+      }
+   }
+   return { source: serializeProcess( DI, "DI" ), xdrz: xdrz, companions: companions };
+}
+
+// Write the worker's drizzle bundle as the WBPP drizzle master and wire it.
+function finalizeDrizzleMaster( engine, operation, vo )
+{
+   var frameGroup = operation.group;
+   var bundlePath = null;
+   for ( var i = 0; i < vo.length; ++i )
+      if ( /\.xisf$/i.test( vo[ i ].path ) )
+         bundlePath = vo[ i ].path;
+   if ( !bundlePath )
+      throw new Error( "no drizzle integration in the outputs" );
+
+   var wins = ImageWindow.open( bundlePath );
+   if ( !( wins instanceof Array ) )
+      wins = [ wins ];
+   var win = wins[ 0 ], weight = ( wins.length > 1 ) ? wins[ 1 ] : null;
+   __applyMasterMetadata( engine, frameGroup, win );
+
+   var scale = frameGroup.drizzleScale();
+   var filePath = WBPPUtils.existingAndUniqueFileName( engine.outputDirectory + "/master",
+      "master" + frameGroup.folderName( false ) + "_drizzle_" + scale + "x.xisf" );
+   var outWins = [ win ], outIds = [ "drizzle_integration" ];
+   if ( weight != null ) { outWins.push( weight ); outIds.push( "drizzle_weights" ); }
+   engine.imageProcessor.writeImage( filePath, outWins, outIds );
+   for ( var w = 0; w < wins.length; ++w )
+      try { wins[ w ].forceClose(); } catch ( e ) {}
+
+   frameGroup.setMasterFileName( filePath, BPP.MasterType.DRIZZLE );
+   engine.processLogger.addSuccess( "Drizzle Integration completed", "master saved at path " + filePath + " [cluster]" );
+   operation.statusMessage = "drizzle integrated  [cluster]";
+   return filePath;
+}
+
+function dispatchDrizzleBatch( engine, bridge, batch, env, ri )
+{
+   var nWorkers = bridge.__nWorkers || 1, machines = nWorkers + 1, load = [];
+   for ( var m = 0; m < machines; ++m ) load.push( 0 );
+   for ( var i = 0; i < batch.length; ++i )
+      batch[ i ].__nFrames = batch[ i ].group.activeFrames().length;
+   var order = batch.slice().sort( function( a, b ) { return b.__nFrames - a.__nFrames; } );
+   for ( var i = 0; i < order.length; ++i )
+   {
+      var best = 0, bestLoad = load[ 0 ] * 0.7;
+      for ( var m = 1; m < machines; ++m )
+         if ( load[ m ] < bestLoad ) { best = m; bestLoad = load[ m ]; }
+      order[ i ].__machine = best;
+      load[ best ] += order[ i ].__nFrames;
+   }
+
+   var T = new ElapsedTime, handles = [], nLocal = 0, nCluster = 0;
+   for ( var i = 0; i < batch.length; ++i )
+   {
+      var op = batch[ i ];
+      if ( op.__machine == 0 )
+         continue;
+      try
+      {
+         var cap = captureDrizzle( engine, op, env, ri );
+         var outTmp = __makeTempDir( "drizzle-" + i );
+         var h = bridge.distributeAsync( { inputs: cap.xdrz, op: "drizzle_integration",
+            process_source: cap.source, shared_files: cap.companions,
+            out_dir: outTmp, postfix: "", out_ext: ".xisf", whole_job: true } );
+         handles.push( { op: op, handle: h } );
+         nCluster++;
+      }
+      catch ( e )
+      {
+         __clusterLog( "⚠ drizzle capture failed (" + e.message + ") — local" );
+         op.__clusterStatus = op.__origRun.call( op, env, ri );
+         op.__clusterDone = true; nLocal++;
+      }
+   }
+   for ( var i = 0; i < batch.length; ++i )
+      if ( batch[ i ].__machine == 0 && !batch[ i ].__clusterDone )
+      {
+         batch[ i ].__clusterStatus = batch[ i ].__origRun.call( batch[ i ], env, ri );
+         batch[ i ].__clusterDone = true; nLocal++;
+      }
+   for ( var j = 0; j < handles.length; ++j )
+   {
+      var cop = handles[ j ].op;
+      try
+      {
+         var vo = __verifiedOutputs( bridge.distributeWait( handles[ j ].handle ) );
+         if ( vo.length == 0 )
+            throw new Error( "no drizzle result" );
+         finalizeDrizzleMaster( engine, cop, vo );
+         cop.__clusterStatus = OperationBlockStatus.DONE;
+      }
+      catch ( e )
+      {
+         __clusterLog( "⚠ drizzle client failed (" + e.message + ") — local" );
+         cop.__clusterStatus = cop.__origRun.call( cop, env, ri );
+      }
+      cop.__clusterDone = true;
+   }
+   __clusterLog( "✓ drizzle : " + batch.length + " master(s) — " + nLocal + " local ∥ " +
+      nCluster + " cluster in " + T.value.toFixed( 1 ) + "s" );
+}
+
+// A .xdrz produced during a DISTRIBUTED registration embeds the WORKER's local
+// <SourceImage>/<AlignmentTargetImage> paths (that worker's data dir), which do not
+// exist on the server — so the server's own DrizzleIntegration (and the capture) fail
+// those frames ("No such file. Frame failed"). Rewrite every group .xdrz to the
+// server-canonical calibrated/registered paths (derived from the .xdrz location) so
+// the local drizzle integrates the full set; the worker re-localizes them in turn.
+function __normalizeXdrzPaths( group )
+{
+   var frames = group.activeFrames();
+   for ( var i = 0; i < frames.length; ++i )
+   {
+      var dz = frames[ i ].drizzleFile;
+      if ( !dz || !File.exists( dz ) )
+         continue;
+      var dzDir = File.extractDrive( dz ) + File.extractDirectory( dz );  // .../registered/<group>/
+      var stem  = File.extractName( dz );                                 // <frame>_c_r
+      var calPath = dzDir.replace( "/registered/", "/calibrated/" ) + "/" + stem.replace( /_r$/, "" ) + ".xisf";
+      var regPath = dzDir + "/" + stem + ".xisf";
+      try
+      {
+         var txt = File.readTextFile( dz );
+         var nt = txt;
+         if ( File.exists( calPath ) )
+            nt = nt.replace( /<SourceImage>[^<]*<\/SourceImage>/, "<SourceImage>" + calPath + "</SourceImage>" );
+         if ( File.exists( regPath ) )
+            nt = nt.replace( /<AlignmentTargetImage>[^<]*<\/AlignmentTargetImage>/, "<AlignmentTargetImage>" + regPath + "</AlignmentTargetImage>" );
+         if ( nt != txt )
+            File.writeTextFile( dz, nt );
+      }
+      catch ( e ) { __clusterLog( "⚠ drizzle: could not normalize " + stem + ".xdrz (" + e.message + ")" ); }
+   }
+}
+
+function distributeDrizzleBatch( engine, firstOp, bridge, env, ri )
+{
+   var batch = gatherDrizzleBatch( engine, firstOp );
+   for ( var i = 0; i < batch.length; ++i )   // make every .xdrz server-resolvable first
+      __normalizeXdrzPaths( batch[ i ].group );
+   if ( batch.length <= 1 || ( bridge.__nWorkers || 0 ) < 1 )
+      return firstOp.__origRun.call( firstOp, env, ri );
+   dispatchDrizzleBatch( engine, bridge, batch, env, ri );
+   return firstOp.__clusterStatus;
+}
+
 // Lease the final per-filter LIGHT integrations across the cluster (whole-jobs).
 // Autocrop and the astrometric solution stay LOCAL by design: autocrop is a single
 // global op that crops all filters to the intersection of their crop rects, and
@@ -1089,8 +1356,10 @@ function captureAndDistribute( engine, operation, descriptor, bridge, originalRu
    }
 
    var source  = serializeProcess( P, "P" );
-   var outDir  = P.outputDirectory;
-   // LocalNormalization leaves outputDirectory empty and writes each .xnml next to
+   // most ops expose "outputDirectory"; a descriptor may override the field name.
+   var dirField = descriptor.dirField || "outputDirectory";
+   var outDir  = P[ dirField ];
+   // LocalNormalization leaves its output dir empty and writes each .xnml next to
    // its input frame. Fall back to the input frames' directory so both the
    // server-local outputs and the downloaded client outputs land where WBPP expects.
    if ( !outDir || outDir.length == 0 )
@@ -1130,7 +1399,7 @@ function captureAndDistribute( engine, operation, descriptor, bridge, originalRu
       {
          inputs: clientInputs, shared_files: sharedFiles, file_ref_fields: fileRefs,
          op: descriptor.label, process_source: source, out_dir: outDir,
-         prefix: prefix, postfix: postfix, out_ext: ext,
+         prefix: prefix, postfix: postfix, out_ext: ext, dir_field: dirField,
          targets_field: descriptor.targetsField, path_index: descriptor.pathIndex, drizzle: descriptor.drizzle
       } );
 
@@ -1138,7 +1407,7 @@ function captureAndDistribute( engine, operation, descriptor, bridge, originalRu
    var T = new ElapsedTime;
    if ( serverInputs.length > 0 )
    {
-      try { P.outputDirectory = outDir; } catch ( e ) {} // force LN's empty dir to the resolved one
+      try { P[ dirField ] = outDir; } catch ( e ) {} // force the resolved output dir (LN empty / CC subfolder)
       P[ descriptor.targetsField ] = targetRows( serverInputs );
       P.executeGlobal();
    }

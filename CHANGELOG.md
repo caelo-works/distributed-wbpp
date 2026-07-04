@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-04
+
+### Added
+- **The drizzle integrations are now distributed** (one whole-job per filter group),
+  leased alongside the light integrations. The captured `DrizzleIntegration` travels
+  with each frame's `.xdrz` drizzle-data file, its calibrated source image and (when
+  local normalization is enabled) its `.xnml`; the worker returns the drizzle master
+  bundle (integration + weights) and the server finalizes it exactly like WBPP's own
+  `doDrizzleIntegration` (naming `_drizzle_<scale>x`, master keywords, signature,
+  `setMasterFileName(DRIZZLE)`), so the local autocrop crops it natively afterwards.
+
+### Fixed
+- A `.xdrz` produced during a **distributed registration** embeds the absolute source
+  path on the worker that generated it. Drizzle integration reads those paths verbatim
+  (it does not remap them), so the server's own drizzle — and any worker's — could
+  silently drop the frames whose `.xdrz` pointed elsewhere. Both sides now rewrite the
+  embedded `<SourceImage>`/`<AlignmentTargetImage>` paths to locally resolvable copies
+  before integrating (server → its canonical calibrated/registered tree; worker → its
+  data dir), so every frame is integrated on every machine.
+
+### Validation
+- Real 2-node LAN run: all 21 masters — the 3 `_drizzle_2x` and their 3
+  `_drizzle_2x_autocrop` included — pixel-identical to a local-only baseline (max
+  |difference| = 0), and the WBPP log reports `DrizzleIntegration: 10 succeeded,
+  0 failed` on every group. Pipeline 548.3s vs 759.3s local (drizzle enabled).
+
 ## [1.3.0] - 2026-07-04
 
 ### Added
@@ -109,7 +135,8 @@ All notable changes to this project are documented here. The format is based on
   reproducible release artifact (`build-update-package.sh`).
 - Verified on PixInsight 1.9.3 / WBPP 2.9.1 (see [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)).
 
-[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.0.1...v1.1.0
