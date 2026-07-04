@@ -53,6 +53,24 @@ var WBPP_SHIM_COMPAT = { "3.0.1": true };
 Every node in a cluster must run the **same** PixInsight + WBPP versions; the sidecar
 enforces this with a version handshake and refuses to distribute on a mismatch.
 
+## Platform validation
+
+| OS | Sidecar binary | Status |
+|---|---|---|
+| Windows | `wbpp-sidecar-windows-amd64.exe` | Verified — all E2E validation runs (server and worker roles). |
+| Linux | `wbpp-sidecar-linux-amd64` | Verified (Ubuntu 24.04, PI 1.9.4 / WBPP 3.0.1) — full E2E run as **worker in a mixed cluster** (Windows server): every distributed op collected, WBPP logs clean, worker 0 errors. |
+| macOS | `wbpp-sidecar-darwin-*` | Cross-compiled and bundled, **not yet runtime-tested**; binary unsigned (Gatekeeper may block until code-signing lands). |
+
+**Mixed-OS clusters are supported with a documented caveat:** outputs are bit-identical
+when every node runs the same OS, and *numerically equivalent* across OSes. PixInsight's
+math libraries differ per platform, so pixels sitting exactly on a rejection threshold
+can be clipped on one OS and kept on another. Measured on a Windows-server +
+Linux-worker run: identical means to < 1e-8; worst local difference ~1.4e-3, confined
+to marginal hot pixels of a short master dark and its calibration cascade. A distributed
+integration on the *same* OS as the server reproduced the local master **bit-identically**
+in the same run, confirming the divergence is platform math, not the distribution
+mechanism.
+
 ## Adding support for a new WBPP version
 
 When WBPP releases a new version, support is **opt-in and evidence-based**:

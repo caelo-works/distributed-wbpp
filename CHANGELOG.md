@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-04
+
+### Added
+- **Linux validated end-to-end** (Ubuntu 24.04, PixInsight 1.9.4 / WBPP 3.0.1): a real
+  mixed cluster — Windows server + Linux worker — ran the full SHO pipeline with every
+  distributed operation (per-frame ops, calibration/light/drizzle integrations, LN
+  reference) collected from the Linux node; WBPP logs clean on both sides, worker
+  finished 16 jobs / 44 frames with 0 errors. The bundled `wbpp-sidecar-linux-amd64`
+  (static ELF, no runtime dependency) is now runtime-verified. macOS remains the only
+  untested platform.
+
+### Changed
+- README and `docs/COMPATIBILITY.md` now document the **mixed-OS caveat**: results are
+  bit-identical when all nodes run the same OS, and numerically equivalent across OSes
+  (PixInsight's per-platform math libraries can flip pixels sitting exactly on a
+  rejection threshold; measured mean difference < 1e-8, worst local difference ~1.4e-3
+  on marginal hot pixels). An integration leased to a same-OS worker in the very same
+  run reproduced the local master bit-identically, isolating the divergence to platform
+  math rather than the distribution mechanism.
+
 ## [1.4.0] - 2026-07-04
 
 ### Added
@@ -135,7 +155,8 @@ All notable changes to this project are documented here. The format is based on
   reproducible release artifact (`build-update-package.sh`).
 - Verified on PixInsight 1.9.3 / WBPP 2.9.1 (see [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)).
 
-[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.1.0...v1.2.0
