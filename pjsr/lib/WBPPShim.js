@@ -1,28 +1,36 @@
 /*
  * WBPPShim.js — graft cluster distribution onto the native WBPP engine.
  *
- * Mechanism (validated primitives on PixInsight 1.9.3):
- *   - <Process>.prototype.executeGlobal CAN be monkey-patched (probe ✅);
- *   - process.outputData is READ-ONLY (probe ❌) — so we cannot let WBPP's native
- *     post-processing run off our results.
+ * Mechanism (validated primitives on PixInsight 1.9.4 / #engine v8):
+ *   - native prototypes are NOT patchable under v8 (probe ❌ — executeGlobal
+ *     dispatches natively even past an own-property override);
+ *   - engine.processContainer.add is plain JS (probe ✅) and receives the
+ *     fully-configured process right before executeGlobal.
  * Therefore, for a distributable operation we:
- *   1. temporarily override the operation's process class executeGlobal to
- *      CAPTURE the fully-configured instance (masters, params, output dir) and
- *      abort the native _run (sentinel throw) BEFORE its outputData-based
- *      post-processing;
+ *   1. temporarily override engine.processContainer.add to CAPTURE the
+ *      fully-configured instance (masters, params, output dir) and abort the
+ *      native _run (sentinel throw) BEFORE it executes/post-processes;
  *   2. distribute the captured process over the cluster (the sidecar transfers
  *      the referenced shared files — masters/reference — once, checksum-cached);
  *   3. run our OWN post-processing: processingSucceeded/addDrizzleFile per frame.
  *
  * This needs no replication of WBPP's process-building code (WBPP builds it; we
  * capture it), so it's the same tiny surface for every operation and more
- * update-resistant. Anchored to operation names + process field names, which are
- * stable across WBPP 2.9.x.
+ * update-resistant. Anchored to operation names + process field names.
  *
- * ============================ WBPP 2.9.1 anchors ============================
- * Operations are BPPOperationBlock(name, group, ...): names "Registration"
- * (StarAlignment.targets, ref=referenceImage, out "_r"+drizzle) and "Calibration"
- * (ImageCalibration.targetFrames, masters=masterBias/Dark/FlatPath, out "_c").
+ * ============================ WBPP 3.0.x anchors ============================
+ * Operations are ES6 classes extending BPPOperationBlock (this.name, this.group,
+ * instance _run). Every distributable op follows the same sequence:
+ *    P.<targets> = full list; engine.processContainer.add( P );   <- CAPTURE here
+ *    P.<targets> = cache-subset; P.executeGlobal();
+ * Under #engine v8 native prototypes are NOT patchable (executeGlobal dispatches
+ * natively), but engine.processContainer is a plain JS stub on 1.9.4 (WBPP installs
+ * it itself: "V8: ProcessContainer.add() is not available"), so we patch ITS add()
+ * to capture the fully-configured process and abort the native run (sentinel).
+ * Identity lives in BPP.Version.*; steps in BPP.FrameProcessingStep; enum values
+ * are ImageType.Light/Flat (renamed); measurements moved to
+ * engine.subframeAnalyzer.computeDescriptors (same SS columns, same return);
+ * master writes go through engine.imageProcessor.writeImage.
  * Post-processing uses frame.processingSucceeded(step, out) / processingFailed().
  * ===========================================================================
  */
@@ -33,7 +41,20 @@
 #include "ProcessSerializer.js"
 
 // WBPP versions whose operation names + process fields we've verified.
-var WBPP_SHIM_COMPAT = { "2.9.1": true };
+// (2.9.x is served by plugin v1.0.0 — this shim targets the 3.0 engine layout.)
+var WBPP_SHIM_COMPAT = { "3.0.1": true };
+
+// Self-contained WBPP version read (also defined by the entry; duplicate function
+// declarations are legal and identical). >= 3.0: BPP.Version; 2.9.x: #define.
+function wbppVersionString()
+{
+   if ( typeof BPP != "undefined" && BPP.Version && BPP.Version.WBPP_VERSION )
+      return String( BPP.Version.WBPP_VERSION );
+   if ( typeof WBPP_VERSION != "undefined" )
+      return String( WBPP_VERSION );
+   return "unknown";
+}
+
 
 // Optional UI logger (WBPP wipes the console; the dashboard subscribes here).
 var __wbppClusterLog = null;
@@ -99,6 +120,33 @@ function __verifiedOutputs( report )
       if ( outs[ o ].verified && outs[ o ].path && File.exists( outs[ o ].path ) )
          out.push( outs[ o ] );
    return out;
+}
+
+/*
+ * __captureViaContainer — v8-era capture primitive. Native process prototypes are
+ * not patchable under #engine v8, but every WBPP op adds its FULLY-CONFIGURED
+ * process to engine.processContainer (a plain JS stub on 1.9.4) right before
+ * executeGlobal. We patch that add() to grab the instance and abort the native
+ * run with the sentinel. Returns { captured, nativeErr } and always restores.
+ */
+function __captureViaContainer( engine, runNative )
+{
+   // NB: on 1.9.4 processContainer is a NATIVE ProcessContainer and method patches
+   // on native objects are ignored under v8 — so we swap the whole PROPERTY for a
+   // plain-JS decoy during the armed window (engine is plain JS; WBPP itself
+   // assigns this property), and restore it afterwards.
+   var orig = engine.processContainer;
+   if ( !orig )
+      throw new Error( "engine.processContainer not available for capture" );
+   var captured = null, nativeErr = null;
+   engine.processContainer = {
+      add: function( p ) { captured = p; throw __WBPP_CAPTURE_SENTINEL; },
+      toSource: function() { return ( orig && orig.toSource ) ? orig.toSource.apply( orig, arguments ) : ""; }
+   };
+   try { runNative(); }
+   catch ( e ) { if ( e !== __WBPP_CAPTURE_SENTINEL ) nativeErr = e; }
+   finally { engine.processContainer = orig; }
+   return { captured: captured, nativeErr: nativeErr };
 }
 
 // A fresh unique temp dir for a cluster download.
@@ -172,7 +220,7 @@ function installShim( engine, bridge, options )
    var enabled = options.operations || Object.keys( ops );
    wrapQueue( engine, engine.operationQueue, bridge, ops, enabled );
 
-   // Measurements is not a per-group process op — it calls engine.computeDescriptors.
+   // Measurements is not a per-group process op — it calls engine.subframeAnalyzer.computeDescriptors.
    // Distribute it too (unless explicitly disabled) via a data-return path.
    if ( options.measurements !== false )
       wrapMeasurements( engine, bridge );
@@ -211,15 +259,21 @@ function wrapMeasurements( engine, bridge )
 {
    if ( engine.__wbppMeasureWrapped )
       return;
+   if ( !engine.subframeAnalyzer || typeof engine.subframeAnalyzer.computeDescriptors != "function" )
+   {
+      console.warningln( "** Distributed-WBPP: engine.subframeAnalyzer not found; measurements stay local." );
+      return;
+   }
    engine.__wbppMeasureWrapped = true;
-   var original = engine.computeDescriptors;
-   engine.computeDescriptors = function( fileItems )
+   var analyzer = engine.subframeAnalyzer;
+   var original = analyzer.computeDescriptors;
+   analyzer.computeDescriptors = function( fileItems )
    {
       try { return distributeMeasurements( engine, fileItems, bridge, original ); }
       catch ( e )
       {
          __clusterLog( "⚠ measurements: local fallback (" + e.message + ")" );
-         return original.call( engine, fileItems );
+         return original.call( analyzer, fileItems );
       }
    };
 }
@@ -229,7 +283,7 @@ function distributeMeasurements( engine, fileItems, bridge, original )
    var nWorkers = bridge.__nWorkers || 1;
    var M = fileItems ? fileItems.length : 0;
    if ( M < 2 || nWorkers < 1 || bridge.__serverWorks === false )
-      return original.call( engine, fileItems );
+      return original.call( engine.subframeAnalyzer, fileItems );
 
    var label = "measurements";
    var serverCount = __serverCount( label, M, nWorkers );
@@ -253,7 +307,7 @@ function distributeMeasurements( engine, fileItems, bridge, original )
 
    // server measures its shard locally (native computeDescriptors -> setDescriptor)
    var T = new ElapsedTime;
-   var serverRes = ( serverItems.length > 0 ) ? original.call( engine, serverItems )
+   var serverRes = ( serverItems.length > 0 ) ? original.call( engine.subframeAnalyzer, serverItems )
                                               : { nCached: 0, nMeasured: 0, nFailed: 0 };
    var serverSecs = T.value;
 
@@ -269,18 +323,25 @@ function distributeMeasurements( engine, fileItems, bridge, original )
          for ( var o = 0; o < outs.length; ++o )
             try { rowByBase[ String( outs[ o ].input ) ] = JSON.parse( File.readTextFile( outs[ o ].path ) ); }
             catch ( e ) {}
+         var leftovers = [];
          for ( var c = 0; c < clientItems.length; ++c )
          {
             var base = File.extractNameAndExtension( clientItems[ c ].current );
             var d = buildDescriptor( rowByBase[ base ], clientItems[ c ].current );
             if ( !d.failed ) { clientItems[ c ].setDescriptor( d ); nMeasured++; }
-            else { clientItems[ c ].processingFailed(); nFailed++; }
+            else leftovers.push( clientItems[ c ] );   // not returned/invalid -> measure locally
+         }
+         if ( leftovers.length > 0 )
+         {
+            __clusterLog( "⚠ measurements: " + leftovers.length + " frame(s) not returned — measuring locally" );
+            var r3 = original.call( engine.subframeAnalyzer, leftovers );
+            nMeasured += r3.nMeasured; nFailed += r3.nFailed;
          }
       }
       catch ( e )
       {
          __clusterLog( "⚠ measurements cluster failed (" + e.message + ") — local measure" );
-         var r2 = original.call( engine, clientItems );
+         var r2 = original.call( engine.subframeAnalyzer, clientItems );
          nMeasured += r2.nMeasured; nFailed += r2.nFailed;
       }
    }
@@ -305,14 +366,14 @@ function wrapCalibIntegration( engine, bridge )
    q.addOperation = function( operation, params )
    {
       if ( operation && operation.name == "Integration" && operation.group
-           && typeof ImageType != "undefined" && operation.group.imageType != ImageType.LIGHT )
+           && typeof ImageType != "undefined" && operation.group.imageType != ImageType.Light )
       {
          operation.__origRun = operation.run;
          operation.run = function( env, ri )
          {
             if ( operation.__clusterDone )                 // computed as part of a batch
                return operation.__clusterStatus;
-            var isFlat = ( operation.group.imageType == ImageType.FLAT );
+            var isFlat = ( operation.group.imageType == ImageType.Flat );
             try
             {
                return isFlat ? distributeFlatBatch( engine, operation, bridge, env, ri )
@@ -339,7 +400,7 @@ function gatherCalibBatch( engine, firstOp )
    for ( var i = firstOp.__index__; i < ops.length; ++i )
    {
       var op = ops[ i ].operation;
-      if ( op.name == "Integration" && op.group && op.group.imageType != ImageType.LIGHT )
+      if ( op.name == "Integration" && op.group && op.group.imageType != ImageType.Light )
       {
          var af = op.group.activeFrames();
          if ( af.length < 3 )
@@ -359,16 +420,16 @@ function gatherCalibBatch( engine, firstOp )
 }
 
 // capture the configured ImageIntegration the op would run (abort local execute)
-function captureII( operation, env, ri )
+function captureII( engine, operation, env, ri )
 {
-   var captured = null;
-   var proto = ImageIntegration.prototype, orig = proto.executeGlobal;
-   proto.executeGlobal = function() { captured = this; throw __WBPP_CAPTURE_SENTINEL; };
-   try { operation.__origRun.call( operation, env, ri ); }
-   catch ( e ) { if ( e !== __WBPP_CAPTURE_SENTINEL ) { proto.executeGlobal = orig; throw e; } }
-   proto.executeGlobal = orig;
+   var cap = __captureViaContainer( engine, function() { operation.__origRun.call( operation, env, ri ); } );
+   if ( cap.nativeErr )
+      throw cap.nativeErr;
+   var captured = cap.captured;
    if ( !captured )
-      throw new Error( "II not captured (cached)" );
+      throw new Error( "II not captured (skipped)" );
+   if ( !( captured instanceof ImageIntegration ) )
+      throw new Error( "captured a non-II process" );
    var frames = [], af = operation.group.activeFrames();
    for ( var i = 0; i < af.length; ++i )
       frames.push( af[ i ].current );
@@ -391,7 +452,7 @@ function finalizeMaster( engine, frameGroup, integratedPath )
    w.keywords = kw.concat( w.keywords.filter( function( k ) { return uniq.indexOf( k.name ) == -1; } ) );
    var filePath = WBPPUtils.existingAndUniqueFileName( engine.outputDirectory + "/master",
       "master" + frameGroup.folderName( false ) + ".xisf" );
-   engine.writeImage( filePath, [ w ], [ "integration" ] );
+   engine.imageProcessor.writeImage( filePath, [ w ], [ "integration" ] );
    w.forceClose();
    return filePath;
 }
@@ -424,7 +485,7 @@ function dispatchIntegrationBatch( engine, bridge, batch, env, ri, label )
          continue;
       try
       {
-         var cap = captureII( op, env, ri );
+         var cap = captureII( engine, op, env, ri );
          var outTmp = __makeTempDir( "integ-" + i );
          var h = bridge.distributeAsync( { inputs: cap.frames, op: "integration", process_source: cap.source,
             out_dir: outTmp, postfix: "", out_ext: ".xisf", whole_job: true } );
@@ -433,7 +494,8 @@ function dispatchIntegrationBatch( engine, bridge, batch, env, ri, label )
       }
       catch ( e )
       {
-         op.__clusterStatus = op.__origRun.call( op, env, ri );  // cached / not capturable -> local
+         __clusterLog( "⚠ integration capture failed (" + e.message + ") — local" );
+         op.__clusterStatus = op.__origRun.call( op, env, ri );  // not capturable -> local
          op.__clusterDone = true; nLocal++;
       }
    }
@@ -464,7 +526,7 @@ function dispatchIntegrationBatch( engine, bridge, batch, env, ri, label )
       cop.__clusterDone = true;
    }
    __clusterLog( "✓ " + label + " : " + batch.length + " master(s) — " + nLocal + " local ∥ " +
-      nCluster + " cluster en " + T.value.toFixed( 1 ) + "s" );
+      nCluster + " cluster in " + T.value.toFixed( 1 ) + "s" );
 }
 
 function distributeCalibBatch( engine, firstOp, bridge, env, ri )
@@ -484,14 +546,14 @@ function gatherFlatBatch( engine, firstOp )
    for ( var i = firstOp.__index__; i < ops.length; ++i )
    {
       var op = ops[ i ].operation;
-      if ( !op.group || op.group.imageType == ImageType.LIGHT )
+      if ( !op.group || op.group.imageType == ImageType.Light )
       {
          if ( op.name && op.name.length > 0 ) break;  // light phase / other named op
          continue;                                    // unnamed log block
       }
-      if ( op.name == "Integration" && op.group.imageType == ImageType.FLAT )
+      if ( op.name == "Integration" && op.group.imageType == ImageType.Flat )
          ints.push( op );
-      else if ( op.name == "Calibration" && op.group.imageType == ImageType.FLAT )
+      else if ( op.name == "Calibration" && op.group.imageType == ImageType.Flat )
          cals.push( op );
       else if ( op.name && op.name.length > 0 )
          break;
@@ -583,34 +645,38 @@ function captureAndDistribute( engine, operation, descriptor, bridge, originalRu
    // Only distribute LIGHT frames: their per-frame processing is heavy enough to
    // justify the network transfer. Calibrating flats/darks/bias is trivial compute
    // on big files, so distributing them is a net loss — run those locally.
-   if ( typeof ImageType != "undefined" && group.imageType != undefined && group.imageType != ImageType.LIGHT )
+   if ( typeof ImageType != "undefined" && group.imageType != undefined && group.imageType != ImageType.Light )
       return originalRun.call( operation, env, ri );
 
    var activeFrames = group.activeFrames();
    if ( activeFrames.length == 0 )
       return originalRun.call( operation, env, ri );
 
-   // 1) capture the fully-configured process; abort native _run before its
-   //    outputData-based post-processing. Save/restore group.fileItems because
-   //    some operations (calibration) temporarily subset it during _run.
-   var captured = null;
-   var proc = descriptor.proc;
-   var savedItems = group.fileItems;
-   var origExec = proc.prototype.executeGlobal;
-   proc.prototype.executeGlobal = function() { captured = this; throw __WBPP_CAPTURE_SENTINEL; };
-   var nativeErr = null;
-   try { originalRun.call( operation, env, ri ); }
-   catch ( e ) { if ( e !== __WBPP_CAPTURE_SENTINEL ) nativeErr = e; }
-   finally
-   {
-      proc.prototype.executeGlobal = origExec;
-      try { group.fileItems = savedItems; } catch ( e ) {}
-   }
+   // WBPP 3.0 Fast Integration splits calibration into two passes with different
+   // measurement behavior; run those groups locally rather than model that flow.
+   if ( group.fastIntegrationData && group.fastIntegrationData.enabled )
+      return originalRun.call( operation, env, ri );
 
-   if ( nativeErr )
-      throw nativeErr; // a genuine error before executeGlobal
+   // 1) capture the fully-configured process at processContainer.add (the op sets
+   //    the FULL target list right before adding); abort native _run before it
+   //    executes. Save/restore group.fileItems because some operations
+   //    (calibration) temporarily subset it during _run.
+   var savedItems = group.fileItems;
+   var cap;
+   try { cap = __captureViaContainer( engine, function() { originalRun.call( operation, env, ri ); } ); }
+   finally { try { group.fileItems = savedItems; } catch ( e ) {} }
+
+   if ( cap.nativeErr )
+      throw cap.nativeErr; // a genuine error before the capture point
+   var captured = cap.captured;
    if ( !captured )
-      return originalRun.call( operation, env, ri ); // nothing to run (all cached/skipped)
+      return originalRun.call( operation, env, ri ); // nothing to run (skipped op)
+   if ( !( captured instanceof descriptor.proc ) )
+   {
+      // an unexpected process reached the container first — don't touch it
+      __clusterLog( "⚠ " + descriptor.label + ": captured a " + ( captured.processId ? captured.processId() : "?" ) + " — local fallback" );
+      return originalRun.call( operation, env, ri );
+   }
 
    // 2) run it: the SERVER processes its own shard locally WHILE the clients
    //    process the rest in parallel — no machine sits idle (measured ~1.65x with
@@ -654,7 +720,7 @@ function captureAndDistribute( engine, operation, descriptor, bridge, originalRu
 
    var serverInputs = inputs.slice( 0, serverCount );
    var clientInputs = inputs.slice( serverCount );
-   __clusterLog( "Groupe " + group.folderName() + " : " + M + " frame(s) — " +
+   __clusterLog( "Group " + group.folderName() + " : " + M + " frame(s) — " +
       serverInputs.length + " local ∥ " + clientInputs.length + " cluster (" + label +
       ( ( __costServer[ label ] != undefined ) ? ", adaptive" : ", init" ) + ")" );
 
@@ -708,7 +774,23 @@ function captureAndDistribute( engine, operation, descriptor, bridge, originalRu
 
    // 3) post-processing (unified): server-local and client outputs both land in
    //    outDir with the same naming, so just check each frame's expected file.
-   var step = ( descriptor.step != undefined ) ? WBPPFrameProcessingStep[ descriptor.step ] : undefined;
+   // any client frame whose expected output is missing gets processed locally
+   // (partial cluster shortfalls must never lose frames)
+   var missing = [];
+   for ( var mI = 0; mI < clientInputs.length; ++mI )
+   {
+      var mOut = outDir + "/" + prefix + File.extractName( clientInputs[ mI ] ) + postfix + ext;
+      if ( !File.exists( mOut ) )
+         missing.push( clientInputs[ mI ] );
+   }
+   if ( missing.length > 0 && missing.length < clientInputs.length )
+   {
+      __clusterLog( "⚠ " + descriptor.label + ": " + missing.length + " output(s) missing — running locally" );
+      P[ descriptor.targetsField ] = targetRows( missing );
+      try { P.executeGlobal(); } catch ( e ) {}
+   }
+
+   var step = ( descriptor.step != undefined ) ? BPP.FrameProcessingStep[ descriptor.step ] : undefined;
    var nOK = 0, nFail = 0;
    for ( var c = 0; c < activeFrames.length; ++c )
    {

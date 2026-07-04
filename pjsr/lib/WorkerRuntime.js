@@ -12,6 +12,18 @@
  */
 
 // Friendly label for a job op, shown in the client activity log.
+
+// Self-contained WBPP version read (also defined by the entry; duplicate function
+// declarations are legal and identical). >= 3.0: BPP.Version; 2.9.x: #define.
+function wbppVersionString()
+{
+   if ( typeof BPP != "undefined" && BPP.Version && BPP.Version.WBPP_VERSION )
+      return String( BPP.Version.WBPP_VERSION );
+   if ( typeof WBPP_VERSION != "undefined" )
+      return String( WBPP_VERSION );
+   return "unknown";
+}
+
 function opLabel( op )
 {
    var m = { calibration: "calibration", registration: "registration",
@@ -58,18 +70,20 @@ function ensureDirectory( path )
 function measureFrames( bridge, job )
 {
    var SS = new SubframeSelector;
-   SS.routine = SubframeSelector.prototype.MeasureSubframes;
+   SS.routine = SubframeSelector.MeasureSubframes;
    SS.nonInteractive = true;
-   SS.cameraResolution = SubframeSelector.prototype.Bits16;
-   SS.scaleUnit = SubframeSelector.prototype.ArcSeconds;
-   SS.dataUnit = SubframeSelector.prototype.DataNumber;
+   SS.cameraResolution = SubframeSelector.Bits16;
+   SS.scaleUnit = SubframeSelector.ArcSeconds;
+   SS.dataUnit = SubframeSelector.DataNumber;
    SS.fileCache = true;
    SS.noNoiseAndSignalWarnings = true;
 
-   var subs = [];
+   // row shape follows the core process (4 columns on PI 1.9.4) — use WBPP's own
+   // helper instead of hand-built rows so it tracks the process definition.
+   var paths = [];
    for ( var i = 0; i < job.input_names.length; ++i )
-      subs.push( [ true, bridge.dataDir + "/" + job.input_names[ i ] ] );
-   SS.subframes = subs;
+      paths.push( bridge.dataDir + "/" + job.input_names[ i ] );
+   SS.subframes = WBPPUtils.enableTargetFrames( paths, 2 );
 
    if ( !SS.executeGlobal() )
       throw new Error( "SubframeSelector measure failed" );
@@ -221,10 +235,11 @@ function countFrames( outputs )
  * shards; a scrolling list logs each event (job received, frames registered,
  * duration, errors) and running counters are kept in the status bar.
  */
-function WorkerDialog( bridge )
+class WorkerDialog extends Dialog
 {
-   this.__base__ = Dialog;
-   this.__base__();
+constructor( bridge )
+{
+   super();
    this.bridge = bridge;
    this.windowTitle = "Distributed WBPP — Client  [build " + DWBPP_BUILD + "]";
 
@@ -344,7 +359,7 @@ function WorkerDialog( bridge )
 
    this.onClose = function() { self.timer.stop(); };
 }
-WorkerDialog.prototype = new Dialog;
+}
 
 // Run the client dialog on an already-started worker bridge (the entry owns the
 // sidecar lifecycle). Blocks until the operator quits the client.

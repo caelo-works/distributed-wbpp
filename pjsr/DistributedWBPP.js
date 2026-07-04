@@ -36,8 +36,11 @@
 // engine v8. For WBPP 2.9.x (PixInsight <= 1.9.3) use plugin v1.0.0.
 #include "__WBPPDIR__/BPP-Main.js"
 
-// No pjsr/*.jsh includes: under #engine v8 the legacy .jsh headers don't load;
+// No pjsr .jsh header includes: under engine v8 the legacy headers don't load;
 // StdButton/StdIcon/FrameStyle (and Sizer classes) are provided as runtime globals.
+// NB: never write a slash-star sequence inside a line comment here — the v8
+// preprocessor's comment stripper does not respect line-comment precedence and
+// would swallow everything up to the next star-slash (it ate our lib includes).
 #include "lib/SidecarBridge.js"
 #include "lib/ProcessSerializer.js"
 #include "lib/WBPPShim.js"
@@ -158,10 +161,11 @@ function resolveSidecar()
 
 // ---- role picker ------------------------------------------------------------
 
-function RoleDialog()
+class RoleDialog extends Dialog
 {
-   this.__base__ = Dialog;
-   this.__base__();
+constructor()
+{
+   super();
    this.windowTitle = "Distributed WBPP  [build " + DWBPP_BUILD + "]";
    this.role = null;
 
@@ -201,14 +205,15 @@ function RoleDialog()
    this.sizer.add( this.buttons );
    this.setFixedSize();
 }
-RoleDialog.prototype = new Dialog;
+}
 
 // ---- server dashboard (non-modal, alongside the WBPP UI) --------------------
 
-function ServerDashboard()
+class ServerDashboard extends Dialog
 {
-   this.__base__ = Dialog;
-   this.__base__();
+constructor()
+{
+   super();
    this.windowTitle = "Distributed WBPP — Server  [build " + DWBPP_BUILD + "]";
    this.steps = 0;
    this.T = new ElapsedTime;
@@ -280,12 +285,12 @@ function ServerDashboard()
    this.recap = function()
    {
       self.header.text = "<b>Done.</b> " + self.steps + " step(s) distributed in " + self.T.value.toFixed( 0 ) + " s.";
-      self.logLine( "— fin du run —" );
+      self.logLine( "— end of run —" );
    };
    if ( this.logger.ok )
-      this.logLine( "Log auto → " + this.logger.path );
+      this.logLine( "Auto log → " + this.logger.path );
 }
-ServerDashboard.prototype = new Dialog;
+}
 
 function runServer( bridge )
 {

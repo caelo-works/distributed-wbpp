@@ -36,12 +36,12 @@ Support is declared in one place — `WBPP_SHIM_COMPAT` in
 [`pjsr/lib/WBPPShim.js`](../pjsr/lib/WBPPShim.js):
 
 ```js
-var WBPP_SHIM_COMPAT = { "2.9.1": true };
+var WBPP_SHIM_COMPAT = { "3.0.1": true };
 ```
 
 | PixInsight | WBPP | Plugin | Status |
 |---|---|---|---|
-| 1.9.4 | 3.0.1 | ≥ 1.0.1 | **Loads & runs native WBPP** (v8 engine, `BPP.Version.*` layout). Distribution **inactive** — the 3.0.x engine anchors are not yet re-verified, so the shim falls back to a normal local run. Port in progress. |
+| 1.9.4 | 3.0.1 | ≥ 1.1.0 | Verified — full SHO run distributed (calibration, registration, local normalization, measurements, calib-master integrations), outputs pixel-identical vs a local-only run. Plugin 1.0.1 loads but runs local-only. |
 | 1.9.3 | 2.9.1 | 1.0.0 | Verified — full SHO run, distributed masters validated bit-identically vs local. Plugin ≥ 1.0.1 does **not** load on this generation (WBPP 3.x include layout); stay on v1.0.0. |
 
 > **WBPP 3.0 was a breaking restructure** (PixInsight 1.9.4): `BPP-defines.jsh` removed,

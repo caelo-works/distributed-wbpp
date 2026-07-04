@@ -3,10 +3,10 @@
  * and reproduce it identically on a worker.
  *
  * This is viable because WBPP itself serializes processes this way: in
- * BPP-operations.js (WBPP 2.9.1, line ~1893) StarAlignment is dumped with
+ * BPP-Pipeline.js (WBPP 3.x flushProcessContainer) StarAlignment is dumped with
  *   SA.toSource("JavaScript", "SA", 0,
- *               SourceCodeFlag_NoTimeInfo | SourceCodeFlag_NoReadOnlyParams |
- *               SourceCodeFlag_NoDescription)
+ *               SourceCodeFlag.NoTimeInfo | SourceCodeFlag.NoReadOnlyParams |
+ *               SourceCodeFlag.NoDescription)
  *
  * The produced source is plain PJSR that, when eval'd on the worker, rebuilds an
  * identical instance. Determinism across nodes is guaranteed by the strict
@@ -22,7 +22,7 @@ function serializeProcess( processInstance, varId )
    // reproducible parameter assignment (exactly what WBPP uses internally).
    return processInstance.toSource(
       "JavaScript", varId || "P", 0,
-      SourceCodeFlag_NoTimeInfo | SourceCodeFlag_NoReadOnlyParams | SourceCodeFlag_NoDescription
+      SourceCodeFlag.NoTimeInfo | SourceCodeFlag.NoReadOnlyParams | SourceCodeFlag.NoDescription
    ).trim();
 }
 

@@ -31,7 +31,8 @@ function SidecarBridge( options )
    this.controlPort     = options.controlPort || 48099;    // worker: local ctl port
    this.discoverSeconds = options.discoverSeconds || 3;    // server: LAN discovery window
    this.distributeTO    = options.distributeTimeout || "30m"; // server: max wait for a distributed job
-   this.peers           = options.peers || "";            // agent: static worker host:port list (bench; bypasses multicast)
+   this.peers           = options.peers || "";
+   this.killStale       = ( options.killStale !== false ); // false => don't taskkill stale sidecars (same-host bench)            // agent: static worker host:port list (bench; bypasses multicast)
 
    this.daemon = null;
    this._seq = 0;
@@ -74,16 +75,20 @@ function SidecarBridge( options )
       // Clear any stale sidecar on THIS machine before launching a fresh one, so
       // relaunching is safe: no zombie agent holds the control port / leftover
       // requests, and no duplicate worker keeps advertising. Windows-only effect
-      // (taskkill); harmless elsewhere. Assumes one role per machine (a 2-PC
-      // cluster) — do NOT run server and worker on the same host.
-      try
+      // (taskkill); harmless elsewhere. Assumes one role per machine — pass
+      // killStale:false when co-hosting server + worker (loopback bench), or the
+      // second start() kills the first role's sidecar.
+      if ( this.killStale !== false )
       {
-         var K = new ExternalProcess;
-         K.start( "taskkill", [ "/F", "/IM", "wbpp-sidecar.exe" ] );
-         if ( K.waitForFinished ) K.waitForFinished( 3000 );
+         try
+         {
+            var K = new ExternalProcess;
+            K.start( "taskkill", [ "/F", "/IM", "wbpp-sidecar.exe" ] );
+            if ( K.waitForFinished ) K.waitForFinished( 3000 );
+         }
+         catch ( e ) {}
+         msleep( 400 );
       }
-      catch ( e ) {}
-      msleep( 400 );
 
       this.daemon = new ExternalProcess;
       this.daemon.start( this.binaryPath, args );

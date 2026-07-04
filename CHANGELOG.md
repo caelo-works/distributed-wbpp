@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-03
+
+### Added
+- **Distribution restored on WBPP 3.0.x / PixInsight 1.9.4.** The shim was ported to the
+  v8-era engine: process capture now hooks `engine.processContainer` (native prototype
+  patching is ignored under v8), measurements go through `engine.subframeAnalyzer`,
+  enums/steps use the 3.0 layout (`ImageType.Light`, `BPP.FrameProcessingStep`), and the
+  worker builds process target rows with `WBPPUtils.enableTargetFrames` so row shapes
+  track the core processes.
+- Robustness: partial cluster shortfalls are now reprocessed locally (measurements and
+  per-frame operations) — a failed or partial worker result can no longer lose frames.
+- Groups using WBPP 3.0 Fast Integration run locally (guard) until that flow is modeled.
+
+### Changed
+- `SidecarBridge` gained `killStale` and `controlPort` options (same-host server+worker
+  co-hosting for the loopback bench).
+
 ## [1.0.1] - 2026-07-03
 
 ### Fixed
@@ -56,6 +73,7 @@ All notable changes to this project are documented here. The format is based on
   reproducible release artifact (`build-update-package.sh`).
 - Verified on PixInsight 1.9.3 / WBPP 2.9.1 (see [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)).
 
-[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/caelo-works/distributed-wbpp/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/caelo-works/distributed-wbpp/releases/tag/v1.0.0
