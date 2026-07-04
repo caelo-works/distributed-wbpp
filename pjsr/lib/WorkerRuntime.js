@@ -129,11 +129,12 @@ function measureFrames( bridge, job )
  */
 /*
  * drizzleIntegrate — DrizzleIntegration shard (whole-job per filter). The .xdrz
- * files arrive as inputs; the calibrated source images (referenced in each .xdrz)
- * and the .xnml files arrive as shared_files. DI.inputDirectory = dataDir makes DI
- * resolve the source images (and any path it can't find) by basename in dataDir, so
- * the .xdrz keep their original absolute <SourceImage> paths untouched. Returns the
- * 2-image drizzle bundle (integration + weights); the server finalizes it.
+ * files arrive as inputs; the calibrated source images and the .xnml files arrive
+ * as shared_files. DrizzleIntegration reads each .xdrz's embedded absolute paths
+ * VERBATIM (inputDirectory does NOT remap them — proven during v1.4.0), so the
+ * embedded <SourceImage>/<AlignmentTargetImage> are rewritten to this worker's
+ * local copies before integrating. Returns the 2-image drizzle bundle
+ * (integration + weights); the server finalizes it.
  */
 function drizzleIntegrate( bridge, job )
 {
@@ -164,7 +165,6 @@ function drizzleIntegrate( bridge, job )
       rows.push( [ true, xdrz, ln ] );
    }
    DI.inputData = rows;
-   DI.inputDirectory = bridge.dataDir;  // belt-and-suspenders (source paths are already local)
    DI.showImages = false;
 
    if ( !DI.executeGlobal() )
@@ -287,7 +287,6 @@ function processJob( bridge, job )
    var ext     = ( typeof job.output_ext == "string" && job.output_ext.length ) ? job.output_ext : ".xisf";
    // most ops expose "outputDirectory"; the manifest may name a different field.
    try { P[ ( job.dir_field && job.dir_field.length ) ? job.dir_field : "outputDirectory" ] = bridge.dataDir; } catch ( e ) {}
-   try { P.outputDirectory = bridge.dataDir; } catch ( e ) {}
    try { P.outputPrefix = prefix; } catch ( e ) {}
    try { P.outputPostfix = postfix; } catch ( e ) {}
    try { P.outputExtension = ext; } catch ( e ) {}

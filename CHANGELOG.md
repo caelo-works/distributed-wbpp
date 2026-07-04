@@ -6,6 +6,40 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-07-04
+
+### Changed
+- **Drizzle jobs upload ~50% less**: the registered frames are no longer shipped to the
+  worker — DrizzleIntegration never opens `<AlignmentTargetImage>` (verified by probe:
+  integration succeeds with a dangling path), so only the `.xdrz`, the calibrated
+  sources and the `.xnml` companions travel. Saves roughly 250-400 MB of upload per
+  leased drizzle job on the server's NIC, the cluster's bottleneck resource.
+- **`.xdrz` paths are now fixed at the source**: a drizzle-data file produced during a
+  distributed registration is canonicalized (embedded `<SourceImage>` /
+  `<AlignmentTargetImage>` rewritten to the server's own tree) the moment it is
+  collected, instead of just before drizzle integration. The on-disk state is correct
+  for every consumer — including a later WBPP re-run from cache with the cluster
+  disabled, which previously would have failed those frames in native drizzle. The
+  pre-drizzle normalization remains as a one-pass repair net for files left behind by
+  v1.4.x runs.
+
+### Fixed
+- The `calibIntegration` option now really gates all whole-job families (a braceless
+  `if` made the LN-reference and drizzle wraps run unconditionally).
+- Removed a dead `DrizzleIntegration.inputDirectory` assignment and the stale comments
+  describing that abandoned design (`inputDirectory` does not remap the `.xdrz`
+  embedded paths — the rewrite mechanism is what works, and now the comments say so).
+
+### Internal
+- The greedy least-loaded machine assignment (server discount 0.7) is factored into a
+  single `__assignMachines` helper shared by the three whole-job dispatchers; the
+  `.xdrz` sibling-path derivation is factored into `__xdrzServerPaths`.
+
+### Validation
+- Full 2-node E2E rerun with the refactored code: WBPP logs clean on both sides
+  (drizzle 10 succeeded / 0 failed per group, worker 0 errors) and all 21 masters
+  pixel-identical to the baseline (max |difference| = 0).
+
 ## [1.5.0] - 2026-07-04
 
 ### Added
@@ -155,7 +189,8 @@ All notable changes to this project are documented here. The format is based on
   reproducible release artifact (`build-update-package.sh`).
 - Verified on PixInsight 1.9.3 / WBPP 2.9.1 (see [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)).
 
-[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.2.0...v1.3.0

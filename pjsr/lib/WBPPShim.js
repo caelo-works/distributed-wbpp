@@ -244,9 +244,11 @@ function installShim( engine, bridge, options )
    // integration is leased to a single free worker; concurrent jobs serialize per
    // worker (no deadlock). Server integrates its own share locally in parallel.
    if ( options.calibIntegration !== false )
+   {
       wrapCalibIntegration( engine, bridge );
       wrapLNReference( engine, bridge );
       wrapDrizzleIntegration( engine, bridge );
+   }
 
    return { active: true, reason: "ok", workers: workers.length, operations: enabled };
 }
@@ -500,12 +502,14 @@ function finalizeMaster( engine, frameGroup, integratedPath )
 }
 
 // Assign a set of independent integration ops across machines and run them: the
-// server integrates its share locally while the cluster integrates the rest as
-// whole-jobs (one per free worker, serialized), then finalize each client result
-// into a WBPP master. Marks every op __clusterDone with its status.
-function dispatchIntegrationBatch( engine, bridge, batch, env, ri, label )
+// Greedy least-loaded assignment shared by every whole-job dispatcher: sets
+// op.__nFrames and op.__machine (0 = server, weighted 0.7 — cheaper, no transfer).
+// NOTE: dispatchIntegrationBatch / dispatchLNRefBatch / dispatchDrizzleBatch also
+// share the capture/dispatch/finalize skeleton — extract it (hooks: capture,
+// manifest, finalize) when the NEXT whole-job family lands, with its E2E gate.
+function __assignMachines( batch, nWorkers )
 {
-   var nWorkers = bridge.__nWorkers || 1, machines = nWorkers + 1, load = [];
+   var machines = nWorkers + 1, load = [];
    for ( var m = 0; m < machines; ++m ) load.push( 0 );
    for ( var i = 0; i < batch.length; ++i )   // cache the (native) frame count once per op
       batch[ i ].__nFrames = batch[ i ].group.activeFrames().length;
@@ -518,6 +522,15 @@ function dispatchIntegrationBatch( engine, bridge, batch, env, ri, label )
       order[ i ].__machine = best;
       load[ best ] += order[ i ].__nFrames;
    }
+}
+
+// server integrates its share locally while the cluster integrates the rest as
+// whole-jobs (one per free worker, serialized), then finalize each client result
+// into a WBPP master. Marks every op __clusterDone with its status.
+function dispatchIntegrationBatch( engine, bridge, batch, env, ri, label )
+{
+   var nWorkers = bridge.__nWorkers || 1;
+   __assignMachines( batch, nWorkers );
 
    var T = new ElapsedTime, handles = [], nLocal = 0, nCluster = 0;
    for ( var i = 0; i < batch.length; ++i )
@@ -834,19 +847,8 @@ function finalizeLNReference( engine, operation, vo, cap )
 // share natively while the cluster works.
 function dispatchLNRefBatch( engine, bridge, batch, env, ri )
 {
-   var nWorkers = bridge.__nWorkers || 1, machines = nWorkers + 1, load = [];
-   for ( var m = 0; m < machines; ++m ) load.push( 0 );
-   for ( var i = 0; i < batch.length; ++i )
-      batch[ i ].__nFrames = batch[ i ].group.activeFrames().length;
-   var order = batch.slice().sort( function( a, b ) { return b.__nFrames - a.__nFrames; } );
-   for ( var i = 0; i < order.length; ++i )
-   {
-      var best = 0, bestLoad = load[ 0 ] * 0.7;   // server cheaper (no transfer)
-      for ( var m = 1; m < machines; ++m )
-         if ( load[ m ] < bestLoad ) { best = m; bestLoad = load[ m ]; }
-      order[ i ].__machine = best;
-      load[ best ] += order[ i ].__nFrames;
-   }
+   var nWorkers = bridge.__nWorkers || 1;
+   __assignMachines( batch, nWorkers );
 
    var T = new ElapsedTime, handles = [], nLocal = 0, nCluster = 0;
    for ( var i = 0; i < batch.length; ++i )
@@ -909,14 +911,52 @@ function distributeLNRefBatch( engine, firstOp, bridge, env, ri )
 }
 
 /*
+ * -------- .xdrz path canonicalization ----------------------------------------
+ * A .xdrz embeds ABSOLUTE <SourceImage> (calibrated) and <AlignmentTargetImage>
+ * (registered) paths. One produced on a worker embeds THAT worker's data dir, so
+ * every other machine — including this server — would fail those frames
+ * ("No such file. Frame failed"). The canonical locations are derivable from the
+ * .xdrz path itself: it lives in .../registered/<group>/ and WBPP's layout puts
+ * the calibrated source in .../calibrated/<group>/ minus the "_r" postfix.
+ */
+function __xdrzServerPaths( dz )
+{
+   var dir  = File.extractDrive( dz ) + File.extractDirectory( dz );  // .../registered/<group>/
+   var stem = File.extractName( dz );                                 // <frame>_c_r
+   return {
+      cal: dir.replace( "/registered/", "/calibrated/" ) + "/" + stem.replace( /_r$/, "" ) + ".xisf",
+      reg: dir + "/" + stem + ".xisf"
+   };
+}
+
+// Rewrite one .xdrz's embedded paths to the server-canonical ones (idempotent:
+// a server-produced .xdrz already carries them and is left untouched).
+function __canonicalizeXdrz( dz )
+{
+   var paths = __xdrzServerPaths( dz );
+   try
+   {
+      var txt = File.readTextFile( dz );
+      var nt = txt;
+      if ( File.exists( paths.cal ) )
+         nt = nt.replace( /<SourceImage>[^<]*<\/SourceImage>/, "<SourceImage>" + paths.cal + "</SourceImage>" );
+      if ( File.exists( paths.reg ) )
+         nt = nt.replace( /<AlignmentTargetImage>[^<]*<\/AlignmentTargetImage>/, "<AlignmentTargetImage>" + paths.reg + "</AlignmentTargetImage>" );
+      if ( nt != txt )
+         File.writeTextFile( dz, nt );
+   }
+   catch ( e ) { __clusterLog( "⚠ could not canonicalize " + File.extractName( dz ) + ".xdrz (" + e.message + ")" ); }
+}
+
+/*
  * -------- Drizzle integration (per filter, whole-job) ------------------------
  * DrizzleIntegration re-projects the CALIBRATED source frames using the alignment
- * stored in each .xdrz. Inputs on the worker: the .xdrz files, the .xnml (if LN),
- * and the calibrated source images each .xdrz references in <SourceImage>. We ship
- * all of them; the worker sets DI.inputDirectory to its data dir so DI resolves the
- * source images and companions by basename (no XML rewriting). It runs BEFORE
- * autocrop (which then crops the drizzle master locally). Requires the regular
- * master light (already produced, distributed in v1.2), so it is a leaf whole-job.
+ * stored in each .xdrz, reading the embedded <SourceImage> path VERBATIM
+ * (inputDirectory does not remap it). Inputs on the worker: the .xdrz files, the
+ * .xnml (if LN) and the calibrated sources; the worker rewrites the embedded paths
+ * to its own local copies before integrating. It runs BEFORE autocrop (which then
+ * crops the drizzle master locally). Requires the regular master light (already
+ * produced, distributed in v1.2), so it is a leaf whole-job.
  */
 function wrapDrizzleIntegration( engine, bridge )
 {
@@ -989,41 +1029,20 @@ function captureDrizzle( engine, operation, env, ri )
          continue;
       xdrz.push( dz );
 
-      // Ship the SERVER-CANONICAL calibrated source and .xnml, derived from the .xdrz
-      // path — NOT the <SourceImage> path stored inside the .xdrz, which for frames
-      // registered on a worker points at that worker's data dir (missing here). The
-      // server holds every calibrated frame (own + downloaded), so the canonical copy
-      // is always present; the worker resolves it by basename via DI.inputDirectory.
-      var dzDir = File.extractDrive( dz ) + File.extractDirectory( dz );  // .../registered/<group>/
-      var stem  = File.extractName( dz );                                 // <frame>_c_r
-      var calDir = dzDir.replace( "/registered/", "/calibrated/" );
-      var calBase = stem.replace( /_r$/, "" );                            // <frame>_c
-      var calPath = calDir + "/" + calBase + ".xisf";
-      if ( !File.exists( calPath ) )
-      {
-         // fall back to the <SourceImage> basename located in the canonical calib dir
-         try
-         {
-            var m = File.readTextFile( dz ).match( /<SourceImage>([^<]+)<\/SourceImage>/ );
-            if ( m )
-               calPath = calDir + "/" + File.extractNameAndExtension( m[ 1 ] );
-         }
-         catch ( e ) {}
-      }
-      if ( File.exists( calPath ) )
-         companions.push( calPath );
+      // Ship the server-canonical calibrated source (derived from the .xdrz path —
+      // the embedded <SourceImage> is already canonical after __canonicalizeXdrz, but
+      // deriving avoids re-reading 800KB of XML per frame). The registered frame is
+      // NOT shipped: DrizzleIntegration never opens <AlignmentTargetImage> (probed:
+      // integration succeeds with a dangling path), and it would double the upload.
+      var paths = __xdrzServerPaths( dz );
+      if ( File.exists( paths.cal ) )
+         companions.push( paths.cal );
       else
-         __clusterLog( "⚠ drizzle: calibrated source missing for " + stem );
-
-      // the aligned frame (<AlignmentTargetImage>) — recorded in the .xdrz; ship it so
-      // the rewritten local path always resolves even if DI touches it.
-      var regPath = dzDir + "/" + stem + ".xisf";
-      if ( File.exists( regPath ) )
-         companions.push( regPath );
+         __clusterLog( "⚠ drizzle: calibrated source missing for " + File.extractName( dz ) );
 
       if ( usesLN )
       {
-         var lnPath = dzDir + "/" + stem + ".xnml";  // .xnml lives beside the .xdrz
+         var lnPath = File.changeExtension( dz, ".xnml" );  // .xnml lives beside the .xdrz
          if ( File.exists( lnPath ) )
             companions.push( lnPath );
       }
@@ -1065,19 +1084,8 @@ function finalizeDrizzleMaster( engine, operation, vo )
 
 function dispatchDrizzleBatch( engine, bridge, batch, env, ri )
 {
-   var nWorkers = bridge.__nWorkers || 1, machines = nWorkers + 1, load = [];
-   for ( var m = 0; m < machines; ++m ) load.push( 0 );
-   for ( var i = 0; i < batch.length; ++i )
-      batch[ i ].__nFrames = batch[ i ].group.activeFrames().length;
-   var order = batch.slice().sort( function( a, b ) { return b.__nFrames - a.__nFrames; } );
-   for ( var i = 0; i < order.length; ++i )
-   {
-      var best = 0, bestLoad = load[ 0 ] * 0.7;
-      for ( var m = 1; m < machines; ++m )
-         if ( load[ m ] < bestLoad ) { best = m; bestLoad = load[ m ]; }
-      order[ i ].__machine = best;
-      load[ best ] += order[ i ].__nFrames;
-   }
+   var nWorkers = bridge.__nWorkers || 1;
+   __assignMachines( batch, nWorkers );
 
    var T = new ElapsedTime, handles = [], nLocal = 0, nCluster = 0;
    for ( var i = 0; i < batch.length; ++i )
@@ -1130,36 +1138,21 @@ function dispatchDrizzleBatch( engine, bridge, batch, env, ri )
       nCluster + " cluster in " + T.value.toFixed( 1 ) + "s" );
 }
 
-// A .xdrz produced during a DISTRIBUTED registration embeds the WORKER's local
-// <SourceImage>/<AlignmentTargetImage> paths (that worker's data dir), which do not
-// exist on the server — so the server's own DrizzleIntegration (and the capture) fail
-// those frames ("No such file. Frame failed"). Rewrite every group .xdrz to the
-// server-canonical calibrated/registered paths (derived from the .xdrz location) so
-// the local drizzle integrates the full set; the worker re-localizes them in turn.
+// Safety net for .xdrz that predate the producer-side canonicalization (e.g. a
+// cached registration from an older run left worker paths on disk): repair the
+// group's files once. Fresh runs canonicalize at registration collection, so this
+// is a no-op that costs one read per .xdrz, once per group.
 function __normalizeXdrzPaths( group )
 {
+   if ( group.__xdrzNormalized )
+      return;
+   group.__xdrzNormalized = true;
    var frames = group.activeFrames();
    for ( var i = 0; i < frames.length; ++i )
    {
       var dz = frames[ i ].drizzleFile;
-      if ( !dz || !File.exists( dz ) )
-         continue;
-      var dzDir = File.extractDrive( dz ) + File.extractDirectory( dz );  // .../registered/<group>/
-      var stem  = File.extractName( dz );                                 // <frame>_c_r
-      var calPath = dzDir.replace( "/registered/", "/calibrated/" ) + "/" + stem.replace( /_r$/, "" ) + ".xisf";
-      var regPath = dzDir + "/" + stem + ".xisf";
-      try
-      {
-         var txt = File.readTextFile( dz );
-         var nt = txt;
-         if ( File.exists( calPath ) )
-            nt = nt.replace( /<SourceImage>[^<]*<\/SourceImage>/, "<SourceImage>" + calPath + "</SourceImage>" );
-         if ( File.exists( regPath ) )
-            nt = nt.replace( /<AlignmentTargetImage>[^<]*<\/AlignmentTargetImage>/, "<AlignmentTargetImage>" + regPath + "</AlignmentTargetImage>" );
-         if ( nt != txt )
-            File.writeTextFile( dz, nt );
-      }
-      catch ( e ) { __clusterLog( "⚠ drizzle: could not normalize " + stem + ".xdrz (" + e.message + ")" ); }
+      if ( dz && File.exists( dz ) )
+         __canonicalizeXdrz( dz );
    }
 }
 
@@ -1466,7 +1459,13 @@ function captureAndDistribute( engine, operation, descriptor, bridge, originalRu
          {
             var drz = File.changeExtension( outputFile, ".xdrz" );
             if ( File.exists( drz ) )
+            {
+               // a client-registered .xdrz embeds the WORKER's paths — fix it on
+               // disk once, here, so every later consumer (our drizzle lanes, a
+               // future cached native run) reads resolvable paths.
+               __canonicalizeXdrz( drz );
                activeFrames[ c ].addDrizzleFile( drz );
+            }
          }
          nOK++;
       }
