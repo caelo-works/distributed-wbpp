@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-07-11
+
+### Added
+- **New menu icon** (radial hub — one core, four machines) and a **CaeloWorks family
+  header** on all three windows (role picker, server dashboard, client log): 44px
+  emblem, title, a clickable "by CaeloWorks" link and a mode tagline — consistent
+  with the other CaeloWorks scripts.
+- The script now lives under its own menu category: **Script > CaeloWorks**.
+
+### Fixed
+- **The menu icon actually shows now.** Two defects, found by diffing against a
+  working sibling script and reading PixInsight's feature registry: the packaging
+  installed the SVG under `rsc/icons/script/` (which only serves the bundled official
+  scripts — for third-party scripts `@script_icons_dir` resolves to the script's own
+  directory), and `#feature-id` lacked the explicit feature name (`Name : Menu > Path`)
+  without which PixInsight never associates the icon. The zip now ships the SVG beside
+  the entry script and the feature-id carries the name.
+
 ## [1.7.0] - 2026-07-04
 
 ### Added
@@ -205,7 +223,8 @@ All notable changes to this project are documented here. The format is based on
   reproducible release artifact (`build-update-package.sh`).
 - Verified on PixInsight 1.9.3 / WBPP 2.9.1 (see [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)).
 
-[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.4.0...v1.5.0
