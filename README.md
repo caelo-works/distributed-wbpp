@@ -73,7 +73,7 @@ Download `DistributedWBPP-<version>.zip` from the
 **[Releases](https://github.com/caelo-works/distributed-wbpp/releases)** and extract it
 **into your PixInsight installation directory**, so that
 `src/scripts/CaeloWorks/DistributedWBPP/` lands under `<PixInsight>/src/scripts/`.
-Restart PixInsight — the script appears under **Script → Batch Processing → Distributed
+Restart PixInsight — the script appears under **Script → CaeloWorks → Distributed
 WBPP**. Install it on **every PC** you want in the cluster.
 
 > **Requires PixInsight 1.9.0 or newer**, the **same version on every node.**
@@ -93,7 +93,7 @@ WBPP**. Install it on **every PC** you want in the cluster.
 
 ## Getting started
 
-1. On each **helper** PC, run **Script → Batch Processing → Distributed WBPP** and pick **Client** — leave the window open; it discovers the server and processes the shards it's handed.
+1. On each **helper** PC, run **Script → CaeloWorks → Distributed WBPP** and pick **Client** — leave the window open; it discovers the server and processes the shards it's handed.
 2. On the machine you **drive from**, run it and pick **Server** — the **native WBPP dialog** opens.
 3. Add your frames and configure everything as usual, then click **Run**. A dashboard lists the connected clients and the live **server ∥ cluster** split; WBPP's own Execution Monitor tags each distributed row.
 4. When helpers are present the heavy steps are distributed automatically — including the final per-filter light integrations; autocrop and the astrometric solution run locally on the server.
