@@ -12,7 +12,7 @@
 #                                          src/scripts/CaeloWorks/DistributedWBPP/DistributedWBPP.js
 #                                          src/scripts/CaeloWorks/DistributedWBPP/lib/*.js
 #                                          src/scripts/CaeloWorks/DistributedWBPP/bin/wbpp-sidecar-*
-#                                          rsc/icons/script/DistributedWBPP/DistributedWBPP.svg
+#                                          src/scripts/CaeloWorks/DistributedWBPP/DistributedWBPP.svg
 #   dist/update-package.json             metadata the site needs to emit the <package> xri
 #                                        element (name, version, fileName, sha1, ...).
 #
@@ -32,7 +32,7 @@ STAGE="$( mktemp -d )"
 trap 'rm -rf "$STAGE"' EXIT
 
 DST="$STAGE/src/scripts/$VENDORDIR"
-mkdir -p "$DST/lib" "$DST/bin" "$STAGE/rsc/icons/script/DistributedWBPP"
+mkdir -p "$DST/lib" "$DST/bin"
 rm -rf "$OUT"; mkdir -p "$OUT"
 
 # 1) entry script: the WBPP #include is made relative to the install dir. From
@@ -48,8 +48,10 @@ cp "$REPO"/pjsr/lib/*.js "$DST/lib/"
 #    See README "Sidecar: embedded, not downloaded" for the rationale.
 cp "$REPO"/bin/wbpp-sidecar-* "$DST/bin/"
 
-# 4) menu icon (#feature-icon @script_icons_dir/DistributedWBPP.svg)
-cp "$REPO/pjsr/assets/DistributedWBPP.svg" "$STAGE/rsc/icons/script/DistributedWBPP/DistributedWBPP.svg"
+# 4) menu icon — PixInsight resolves @script_icons_dir to the SCRIPT'S OWN dir
+#    for third-party scripts: the SVG must sit beside the entry .js (and the
+#    #feature-id must carry an explicit feature name: "Name : Menu > Path").
+cp "$REPO/pjsr/assets/DistributedWBPP.svg" "$DST/DistributedWBPP.svg"
 
 # 4b) OPTIONAL code signature — DISABLED by default.
 #     Enabled only when XSSK_PATH points to the CaeloWorks signing keys (.xssk) and

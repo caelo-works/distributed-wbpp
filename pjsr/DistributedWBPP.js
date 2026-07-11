@@ -21,7 +21,7 @@
 
 #engine v8
 
-#feature-id    Batch Processing > Distributed WBPP
+#feature-id    DistributedWBPP : CaeloWorks > Distributed WBPP
 #feature-icon  @script_icons_dir/DistributedWBPP.svg
 #feature-info  Run the native WBPP across multiple PixInsight instances on the LAN.
 
@@ -161,6 +161,114 @@ function resolveSidecar()
 
 // ---- role picker ------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Unlike FrameStyle / StdButton / StdIcon, TextAlign is NOT injected as a
+// runtime global under engine v8 (and pjsr headers do not load). Define it
+// from the official pjsr TextAlign flag values so label alignment works.
+if ( typeof TextAlign == "undefined" )
+   TextAlign = { Left: 0x01, Right: 0x02, HorzCenter: 0x04, Justify: 0x08,
+                 Top: 0x20, Bottom: 0x40, VertCenter: 0x80,
+                 Center: 0x84, Default: 0x21, Unknown: 0x00 };
+
+// ---------------------------------------------------------------------------
+// CaeloWorks dialog header (same family look as the other CaeloWorks scripts):
+// 44px emblem + bold title + a clickable "by CaeloWorks" + an italic tagline.
+
+// Open an URL/file with the OS default handler.
+function dwbppOpenInBrowser( url )
+{
+   var plat = String( CoreApplication.platform );
+   var P = new ExternalProcess;
+   if ( /win|mswindows/i.test( plat ) )
+      P.start( "cmd", [ "/c", "start", "", url ] );
+   else if ( /mac|osx/i.test( plat ) )
+      P.start( "/usr/bin/open", [ url ] );
+   else
+      P.start( "xdg-open", [ url ] );
+   if ( P.waitForStarted )
+      P.waitForStarted();
+}
+
+// The script emblem as a fixed-size control, or null if the SVG can't be found
+// (dev checkouts, installed tree and script-side-by-side all resolve).
+function dwbppMakeEmblem( dlg )
+{
+   var here = File.extractDrive( #__FILE__ ) + File.extractDirectory( #__FILE__ );
+   // dev checkout: pjsr/assets/ ; installed: the SVG sits BESIDE the entry
+   // script (that is where PixInsight resolves @script_icons_dir for scripts).
+   var candidates = [ here + "/assets/DistributedWBPP.svg",
+                      here + "/DistributedWBPP.svg" ];
+   var bmp = null;
+   for ( var i = 0; i < candidates.length && bmp == null; ++i )
+      try
+      {
+         if ( File.exists( candidates[ i ] ) )
+         {
+            var b = new Bitmap( candidates[ i ] );
+            bmp = ( typeof b.scaledTo == "function" ) ? b.scaledTo( 44, 44 ) : b;
+         }
+      }
+      catch ( e ) { bmp = null; }
+   if ( bmp == null )
+      return null;
+   var ctrl = new Control( dlg );
+   ctrl.setFixedSize( 44, 44 );
+   ctrl.__bmp = bmp;
+   ctrl.onPaint = function()
+   {
+      var g = new Graphics( this );
+      try { g.drawBitmap( 0, 0, this.__bmp ); } catch ( e ) {}
+      g.end();
+   };
+   return ctrl;
+}
+
+// Builds the header sizer on dlg (emblem + title column + tagline below).
+// Returns a VerticalSizer ready to be added at the top of the dialog's sizer.
+function dwbppMakeHeader( dlg, tagline )
+{
+   var emblem = dwbppMakeEmblem( dlg );
+
+   var title = new Label( dlg );
+   title.text = "Distributed WBPP";
+   var tf = title.font;
+   tf.bold = true;
+   tf.pointSize = Math.round( dlg.font.pointSize * 1.7 );
+   title.font = tf;
+
+   var by = new Label( dlg );
+   by.useRichText = true;
+   by.text = "by <span style=\"color:#5a8fd0; text-decoration:underline;\">CaeloWorks</span>";
+   by.textAlignment = TextAlign.Left | TextAlign.VertCenter;
+   by.toolTip = "https://pixinsight-scripts.caelo.works/ — build " + DWBPP_BUILD;
+   by.onMousePress = function() { dwbppOpenInBrowser( "https://pixinsight-scripts.caelo.works/" ); };
+   try { by.cursor = new Cursor( ( typeof StdCursor != "undefined" && StdCursor.PointingHand ) ? StdCursor.PointingHand : 13 ); } catch ( e ) {}
+
+   var col = new VerticalSizer;
+   col.add( title );
+   col.add( by );
+
+   var row = new HorizontalSizer;
+   row.spacing = 10;
+   if ( emblem != null )
+      row.add( emblem );
+   row.add( col );
+   row.addStretch();
+
+   var head = new VerticalSizer;
+   head.spacing = 6;
+   head.add( row );
+   if ( tagline )
+   {
+      var tag = new Label( dlg );
+      tag.useRichText = true;
+      tag.wordWrapping = true;
+      tag.text = tagline;
+      head.add( tag );
+   }
+   return head;
+}
+
 class RoleDialog extends Dialog
 {
 constructor()
@@ -169,12 +277,14 @@ constructor()
    this.windowTitle = "Distributed WBPP  [build " + DWBPP_BUILD + "]";
    this.role = null;
 
+   this.headerSizer = dwbppMakeHeader( this,
+      "🖧  <i>Every PixInsight on your network, one WBPP run.</i>" );
+
    this.intro = new Label( this );
    this.intro.useRichText = true;
    this.intro.wordWrapping = true;
    this.intro.setMinWidth( 440 );
    this.intro.text =
-      "<b>Distribute WBPP across the local network.</b><br><br>" +
       "Pick the role of <i>this</i> PC:<br>" +
       "• <b>Server</b> — drives WBPP (native UI), distributes the work.<br>" +
       "• <b>Client</b> — helps the server: leave the window open.";
@@ -201,6 +311,7 @@ constructor()
    this.sizer = new VerticalSizer;
    this.sizer.margin = 12;
    this.sizer.spacing = 12;
+   this.sizer.add( this.headerSizer );
    this.sizer.add( this.intro );
    this.sizer.add( this.buttons );
    this.setFixedSize();
@@ -217,6 +328,9 @@ constructor()
    this.windowTitle = "Distributed WBPP — Server  [build " + DWBPP_BUILD + "]";
    this.steps = 0;
    this.T = new ElapsedTime;
+
+   this.headerSizer = dwbppMakeHeader( this,
+      "🖧  <i>Server — the live server ∥ cluster split shows here during the run.</i>" );
 
    this.header = new Label( this );
    this.header.frameStyle = FrameStyle.Box;
@@ -254,11 +368,12 @@ constructor()
    this.sizer = new VerticalSizer;
    this.sizer.margin = 8;
    this.sizer.spacing = 6;
+   this.sizer.add( this.headerSizer );
    this.sizer.add( this.header );
    this.sizer.add( this.workers );
    this.sizer.add( this.log, 100 );
    this.sizer.add( this.buttons );
-   this.setMinSize( 680, 460 );
+   this.setMinSize( 680, 500 );
 
    this.logger = new FileLogger( scriptParentDir() + "/logs", "server",
       [ "Distributed-WBPP SERVER",

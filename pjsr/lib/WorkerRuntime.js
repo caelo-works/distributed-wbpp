@@ -357,6 +357,12 @@ constructor( bridge )
    this.frames = 0;
    this.errors = 0;
 
+   // CaeloWorks family header (the helper lives in the entry script; the bench
+   // harness includes this file without it and never opens this dialog).
+   this.brandSizer = ( typeof dwbppMakeHeader != "undefined" )
+      ? dwbppMakeHeader( this, "🖧  <i>Client — processing the shards this PC is handed.</i>" )
+      : null;
+
    // header
    this.header = new Label( this );
    this.header.frameStyle = FrameStyle.Box;
@@ -393,10 +399,12 @@ constructor( bridge )
    this.sizer = new VerticalSizer;
    this.sizer.margin = 8;
    this.sizer.spacing = 6;
+   if ( this.brandSizer != null )
+      this.sizer.add( this.brandSizer );
    this.sizer.add( this.header );
    this.sizer.add( this.log, 100 );
    this.sizer.add( this.buttons );
-   this.setMinSize( 620, 420 );
+   this.setMinSize( 620, 460 );
 
    var self = this;
 
