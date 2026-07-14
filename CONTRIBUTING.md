@@ -48,6 +48,21 @@ workflow](.github/workflows/release.yml) cross-compiles the sidecar, builds the
 distribution artifact, and publishes it as release assets. Update
 [`CHANGELOG.md`](CHANGELOG.md) in the same PR that warrants the bump.
 
+[`docs/support-kb.md`](docs/support-kb.md) is the knowledge base read by the **public
+support agent** on the CaeloWorks Discord — it answers members in our place, and it is
+forbidden to invent, so anything absent from that file is an answer we don't give. It is
+reviewed like code and must stay **100 % accurate for the shipped version**.
+
+- Every release must leave it exact: covered version, requirements and compatibility, the
+  distributed-vs-local step lists, UI and log strings, install paths, known limitations.
+- **When a bug is fixed, its entry in "Known bugs and limitations" moves in the same PR** —
+  otherwise the agent keeps announcing a bug that no longer exists.
+- Constraints of the target system: it is chunked one article per `##`, so **no `##`
+  section may exceed ~3500 characters without `###` subsections**, section titles must
+  contain the words a user would actually type, and each section must stand alone (no
+  "see above"). Nothing internal (architecture, release process, keys, infrastructure)
+  belongs in it — the content can be quoted verbatim to any Discord member.
+
 ## Reporting bugs / requesting features
 
 Use the issue templates. For anything security-related, follow

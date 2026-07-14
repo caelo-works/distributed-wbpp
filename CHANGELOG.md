@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **Support knowledge base** ([`docs/support-kb.md`](docs/support-kb.md)) — the reference
+  read by the public support agent on the CaeloWorks Discord: facts card, installation,
+  the correct server/client sequence, what is and is not distributed, network and firewall,
+  version rules, the exact text of every message the plugin can show, known bugs and
+  limitations, symptom → cause → answer troubleshooting, the data-safety guarantees support
+  may promise, and when to escalate. Keeping it accurate — and moving a "known bug" entry
+  in the same PR that fixes the bug — is now part of the release rules (`CONTRIBUTING.md`).
+
 ## [1.8.0] - 2026-07-11
 
 ### Added

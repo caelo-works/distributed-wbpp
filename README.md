@@ -143,7 +143,7 @@ and was validated **bit-identically** against a local run.
 | `pjsr/assets/DistributedWBPP.svg` | Menu icon (`#feature-icon`) |
 | `scripts/build-sidecar.sh` | Cross-compile the sidecar for win/linux/mac |
 | `scripts/build-update-package.sh` | Emit the release artifact (`dist/` zip + `update-package.json`) for the shared update repo |
-| `docs/` | Architecture, WBPP research, status |
+| `docs/` | Architecture, WBPP research, status, [support KB](docs/support-kb.md) (user-facing: install, usage, troubleshooting — kept current at every release) |
 
 ### Build
 
@@ -169,7 +169,7 @@ release** (the hand-off point the site pulls from):
 
 | File | What |
 |---|---|
-| `DistributedWBPP-<version>.zip` | the package, tree **relative to PixInsight's install dir** (extracted verbatim by the updater): `src/scripts/CaeloWorks/DistributedWBPP/{DistributedWBPP.js, lib/*.js, bin/wbpp-sidecar-*}` + `rsc/icons/script/DistributedWBPP/DistributedWBPP.svg`. The WBPP `#include` is rewritten to the portable `../../BatchPreprocessing/`. |
+| `DistributedWBPP-<version>.zip` | the package, tree **relative to PixInsight's install dir** (extracted verbatim by the updater): `src/scripts/CaeloWorks/DistributedWBPP/{DistributedWBPP.js, DistributedWBPP.svg, lib/*.js, bin/wbpp-sidecar-*}`. The menu icon ships **beside the entry script** — that is where PixInsight resolves `@script_icons_dir` for third-party scripts. The WBPP `#include` is rewritten to the portable `../../BatchPreprocessing/`. |
 | `update-package.json` | metadata the site needs to emit this package's `<package>` element: `name, slug, version, fileName, sha1, type, releaseDate, piVersionRange, title, descriptionHtml`. |
 
 - **Reproducible zip.** Entries are sorted, mtimes pinned to 1980-01-01, permissions
