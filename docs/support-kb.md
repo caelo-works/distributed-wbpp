@@ -376,7 +376,7 @@ On the **client** window:
 - **"✗ Failed job <id>: <message>"** — that job was re-run on the server. The message names
   the real cause (disk full, a frame PixInsight itself refused, out of memory on that
   machine). The **"Errors: N"** counter counts these.
-- **"✗ Failed job <id>: rejected job: …"** — the client refused a job it did not consider
+- **"✗ Failed job <id>: rejected job: …"**: the client refused a job it did not consider
   valid (it only runs a fixed list of WBPP processes, with known parameters). Between PCs
   on the same versions this should never happen: collect the logs and escalate.
 
@@ -529,7 +529,7 @@ These are guarantees the design actually enforces. State them plainly:
 2. The **operating system of every machine**.
 3. The **logs**, from this folder on each machine:
    `<home>/CaeloWorks/DistributedWBPP/logs/` (`<home>` is the user folder, for example
-   `C:/Users/<name>` on Windows, `/Users/<name>` on macOS) — send the `server-*.log` from the server,
+   `C:/Users/<name>` on Windows, `/Users/<name>` on macOS). Send the `server-*.log` from the server,
    the `client-*.log` from each helper, plus `sidecar-agent.log` / `sidecar-worker.log` if
    present. The client window and the server dashboard both print their log path on
    startup.

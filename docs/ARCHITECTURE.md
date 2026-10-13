@@ -70,7 +70,7 @@ then batches the flat integrations.
 - `protocol.go` — wire types, constants (multicast group, magic, TTL, handshake).
 - `discovery.go` — UDP multicast **beacon** advertise/browse + a TTL `Registry`
   (custom beacon for a zero-dependency static binary; swappable to DNS-SD).
-- `transport.go` — HTTPS (mutual TLS): `/health` (handshake), `/have`, `/upload`,
+- `transport.go`: HTTPS (mutual TLS): `/health` (handshake), `/have`, `/upload`,
   `/download`, `/lan/work`; every request and response is HMAC-signed, every transfer
   carries a SHA-256 and is verified. Master files are cached by checksum (uploaded
   once, reused across groups). `/lan/work` validates the manifest (op, process id,
@@ -90,7 +90,7 @@ then batches the flat integrations.
     and inserts one hook, `installShim(engine, bridge)`, between the include and the
     run. The user sees the **normal WBPP dialog**, plus a live cluster dashboard.
   - **Client** — runs `lib/WorkerRuntime.js`.
-- `lib/WorkerRuntime.js` — the client pull loop (Timer): rebuild the job's process
+- `lib/WorkerRuntime.js`: the client pull loop (Timer); rebuild the job's process
   from its data description (allowlist, op → process id), rewrite server paths → local
   uploaded copies, run it, report outputs.
   Modes: process (calib/SA/LN), `measurements` (SubframeSelector → `.ssm.json`),
@@ -99,7 +99,7 @@ then batches the flat integrations.
   `distributeAsync`/`distributeWait` for non-blocking cluster jobs.
 - `lib/WBPPShim.js` — the monkey-patch (both models above) + adaptive split + the
   Execution Monitor tagging.
-- `lib/ProcessSerializer.js` — `{ id, params }` data round-trip of a process: names
+- `lib/ProcessSerializer.js`: `{ id, params }` data round-trip of a process: names
   from `toSource`, values from the live instance; rebuilt with `new` from a fixed
   allowlist, known parameters and types only. No `eval`.
 

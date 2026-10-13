@@ -1,5 +1,5 @@
 /*
- * ProcessSerializer.js — carry a configured PixInsight process from the server to
+ * ProcessSerializer.js: carry a configured PixInsight process from the server to
  * a worker as plain DATA, and rebuild it there from a fixed allowlist.
  *
  * Wire shape: { id: "<ProcessId>", params: { <name>: <value>, ... } }
