@@ -20,14 +20,14 @@ import (
 // workers and submit distributed jobs. Bound to 127.0.0.1 only — it is a local
 // control plane, never exposed on the LAN. (The LAN-facing transport server,
 // used by other nodes, is started separately for worker role.)
-func runAgent(ctx context.Context, sc serverConfig, ctrlPort int) {
+func runAgent(ctx context.Context, sec *ClusterSecurity, sc serverConfig, ctrlPort int) {
 	self := Capabilities{
 		Protocol: ProtocolVersion, NodeID: sc.nodeID, Role: RoleServer,
 		OS: runtime.GOOS, PIVersion: sc.pi, WBPPVersion: sc.wbpp,
 	}
 	reg := NewRegistry()
 	go func() {
-		if err := Browse(ctx, sc.token, reg, func(n NodeInfo) {
+		if err := Browse(ctx, sec, reg, func(n NodeInfo) {
 			log.Printf("agent: discovered %s %s at %s", n.Role, n.NodeID, n.Addr)
 		}); err != nil {
 			log.Printf("agent: browse stopped: %v", err)
@@ -37,10 +37,10 @@ func runAgent(ctx context.Context, sc serverConfig, ctrlPort int) {
 	// Bench mode: static peers bypass multicast (robust on multi-homed hosts). The
 	// product default remains multicast auto-discovery (Browse above).
 	if sc.peers != "" {
-		go seedStaticPeers(ctx, sc.token, sc.peers, reg)
+		go seedStaticPeers(ctx, sec, sc.peers, reg)
 	}
 
-	api := &controlAPI{self: self, reg: reg, defaults: sc, busy: map[string]bool{}}
+	api := &controlAPI{self: self, sec: sec, reg: reg, defaults: sc, busy: map[string]bool{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/status", api.handleStatus)
 	mux.HandleFunc("/v1/nodes", api.handleNodes)
@@ -50,7 +50,7 @@ func runAgent(ctx context.Context, sc serverConfig, ctrlPort int) {
 	if err != nil {
 		log.Fatalf("agent: control listen: %v", err)
 	}
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{Handler: localControlOnly(ctrlPort, mux), ReadHeaderTimeout: 30 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -58,8 +58,8 @@ func runAgent(ctx context.Context, sc serverConfig, ctrlPort int) {
 		_ = srv.Shutdown(shctx)
 	}()
 
-	log.Printf("agent %s control API on http://127.0.0.1:%d (token=%q, pi=%s, wbpp=%s)",
-		sc.nodeID, ln.Addr().(*net.TCPAddr).Port, sc.token, sc.pi, sc.wbpp)
+	log.Printf("agent %s control API on http://127.0.0.1:%d (pi=%s, wbpp=%s)",
+		sc.nodeID, ln.Addr().(*net.TCPAddr).Port, sc.pi, sc.wbpp)
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		log.Printf("agent: control server: %v", err)
 	}
@@ -69,7 +69,7 @@ func runAgent(ctx context.Context, sc serverConfig, ctrlPort int) {
 // them into the registry, bypassing multicast. Bench-only (opt-in via --peers); the
 // product default stays multicast auto-discovery (Browse). Re-seeds every 10s so the
 // entries never age out (NodeTTL) and stale/down peers drop off.
-func seedStaticPeers(ctx context.Context, token, peers string, reg *Registry) {
+func seedStaticPeers(ctx context.Context, sec *ClusterSecurity, peers string, reg *Registry) {
 	var addrs []string
 	for _, a := range strings.Split(peers, ",") {
 		if a = strings.TrimSpace(a); a != "" {
@@ -79,7 +79,7 @@ func seedStaticPeers(ctx context.Context, token, peers string, reg *Registry) {
 	for {
 		for _, addr := range addrs {
 			cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			caps, err := FetchCapabilities(cctx, addr)
+			caps, err := sec.FetchCapabilities(cctx, addr)
 			cancel()
 			if err != nil {
 				continue // worker not up yet / unreachable — try again next round
@@ -88,7 +88,7 @@ func seedStaticPeers(ctx context.Context, token, peers string, reg *Registry) {
 			port, _ := strconv.Atoi(portStr)
 			reg.Upsert(NodeInfo{
 				Beacon: Beacon{
-					Magic: BeaconMagic, Protocol: caps.Protocol, Token: token,
+					Magic: BeaconMagic, Protocol: caps.Protocol,
 					NodeID: caps.NodeID, Role: caps.Role, Host: host, HTTPPort: port,
 					OS: caps.OS, PIVersion: caps.PIVersion, WBPPVersion: caps.WBPPVersion,
 				},
@@ -113,7 +113,7 @@ func startWorkerControlAPI(ctx context.Context, pe *PullExecutor, port int, node
 	if err != nil {
 		log.Fatalf("worker: control listen: %v", err)
 	}
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{Handler: localControlOnly(port, mux), ReadHeaderTimeout: 30 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -130,6 +130,7 @@ func startWorkerControlAPI(ctx context.Context, pe *PullExecutor, port int, node
 
 type controlAPI struct {
 	self     Capabilities
+	sec      *ClusterSecurity
 	reg      *Registry
 	defaults serverConfig
 
@@ -187,7 +188,7 @@ func (a *controlAPI) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *controlAPI) handleNodes(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"workers": a.aliveWorkers()})
+	writeJSON(w, http.StatusOK, map[string]any{"workers": a.aliveWorkers(), "incompatible": a.reg.Incompatible()})
 }
 
 // handleDistribute accepts a DistributeJob (inputs are paths on this machine,
@@ -233,7 +234,7 @@ func (a *controlAPI) handleDistribute(w http.ResponseWriter, r *http.Request) {
 		workers = []NodeInfo{wk}
 	}
 
-	rep, err := distributeJob(r.Context(), a.self, workers, job, log.Printf)
+	rep, err := distributeJob(r.Context(), a.sec, a.self, workers, job, log.Printf)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error(), "report": rep})
 		return
@@ -242,7 +243,7 @@ func (a *controlAPI) handleDistribute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *controlAPI) aliveWorkers() []NodeInfo {
-	var out []NodeInfo
+	out := []NodeInfo{}
 	for _, n := range a.reg.Alive() {
 		if n.Role == RoleWorker {
 			out = append(out, n)

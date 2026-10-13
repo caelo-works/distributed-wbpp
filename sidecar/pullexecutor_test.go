@@ -36,15 +36,13 @@ func TestPullExecutorCycle(t *testing.T) {
 	pe := NewPullExecutor(dataDir, 5*time.Second)
 
 	// transport server (LAN side) using the pull executor
-	ts := &TransportServer{caps: Capabilities{NodeID: "w1"}, dataDir: dataDir, executor: pe}
-	lanMux := http.NewServeMux()
-	lanMux.HandleFunc("/upload", ts.handleUpload)
-	lanMux.HandleFunc("/lan/work", ts.handleWork)
-	lan := httptest.NewServer(lanMux)
-	defer lan.Close()
-	lanAddr := strings.TrimPrefix(lan.URL, "http://")
+	sec := testSecurity(t)
+	ts := newTransportServer(Capabilities{NodeID: "w1"}, dataDir, sec)
+	ts.SetExecutor(pe)
+	_, lanAddr := serveTransport(t, ts)
 
-	// localhost worker control endpoints
+	// localhost worker control endpoints (no control guard here: httptest picks
+	// the port; the guard itself is covered by TestLocalControlOnly)
 	ctrlMux := http.NewServeMux()
 	ctrlMux.HandleFunc("/v1/work", pe.handlePull)
 	ctrlMux.HandleFunc("/v1/work/result", pe.handleResult)
@@ -61,7 +59,7 @@ func TestPullExecutorCycle(t *testing.T) {
 		if err := os.WriteFile(p, []byte("data:"+n), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := UploadFile(ctx, lanAddr, p); err != nil {
+		if _, err := sec.UploadFile(ctx, lanAddr, p); err != nil {
 			t.Fatalf("upload %s: %v", n, err)
 		}
 	}
@@ -69,8 +67,8 @@ func TestPullExecutorCycle(t *testing.T) {
 	// the fake "PixInsight worker": poll /v1/work, process, report result
 	go fakePixInsightWorker(t, ctrl.URL, dataDir)
 
-	res, err := SendWork(ctx, lanAddr, WorkManifest{
-		JobID: "reg-w0", Op: "registration",
+	res, err := sec.SendWork(ctx, lanAddr, WorkManifest{
+		JobID: "reg-w0", Op: "registration", Process: json.RawMessage(`{"id":"StarAlignment","params":{}}`),
 		InputNames: names, OutputPostfix: "_r", OutputExt: ".xisf",
 	})
 	if err != nil {

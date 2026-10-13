@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -9,24 +10,25 @@ import (
 )
 
 // WorkManifest describes one shard of a distributed WBPP operation: the process
-// to run (serialized by PixInsight via ProcessInstance.toSource on the server)
-// and the input frames to run it over. Files referenced by name are expected to
+// to run, as DATA ({"id": "<ProcessId>", "params": {...}}, rebuilt on the worker
+// from a fixed allowlist), and the input frames to run it over. Files referenced by name are expected to
 // already be present in the worker's data dir (uploaded beforehand via /upload).
 type WorkManifest struct {
-	JobID         string   `json:"job_id"`
-	Op            string   `json:"op"`             // "registration" | "calibration" | ...
-	ProcessSource string   `json:"process_source"` // PJSR source of the configured process
-	ReferenceName string   `json:"reference_name"` // legacy single shared ref (registration); prefer FileRefFields
-	InputNames    []string `json:"input_names"`    // this shard's frames (already uploaded)
-	OutputPrefix  string   `json:"output_prefix"`  // process outputPrefix ("" usually)
-	OutputPostfix string   `json:"output_postfix"` // e.g. "_r" (StarAlignment), "_c" (ImageCalibration)
-	OutputExt     string   `json:"output_ext"`     // e.g. ".xisf"
+	JobID         string          `json:"job_id"`
+	Op            string          `json:"op"`                // "registration" | "calibration" | ...
+	Process       json.RawMessage `json:"process,omitempty"` // {"id","params"}: opaque here except the id check
+	ReferenceName string          `json:"reference_name"`    // legacy single shared ref (registration); prefer FileRefFields
+	InputNames    []string        `json:"input_names"`       // this shard's frames (already uploaded)
+	OutputPrefix  string          `json:"output_prefix"`     // process outputPrefix ("" usually)
+	OutputPostfix string          `json:"output_postfix"`    // e.g. "_r" (StarAlignment), "_c" (ImageCalibration)
+	OutputExt     string          `json:"output_ext"`        // e.g. ".xisf"
 
 	// Generic distribution (used by the PJSR worker to reconstruct the process):
-	TargetsField  string            `json:"targets_field"`   // "targetFrames" (IC) | "targets" (SA)
-	PathIndex     int               `json:"path_index"`      // index of the path within a target row (1 or 2)
-	FileRefFields map[string]string `json:"file_ref_fields"` // process field -> shared file basename (masters/reference), rewritten to local
-	Drizzle       bool              `json:"drizzle"`         // also collect <base><postfix>.xdrz outputs
+	TargetsField  string            `json:"targets_field"`       // "targetFrames" (IC) | "targets" (SA)
+	PathIndex     int               `json:"path_index"`          // index of the path within a target row (1 or 2)
+	DirField      string            `json:"dir_field,omitempty"` // process field receiving the output directory
+	FileRefFields map[string]string `json:"file_ref_fields"`     // process field -> shared file basename (masters/reference), rewritten to local
+	Drizzle       bool              `json:"drizzle"`             // also collect <base><postfix>.xdrz outputs
 }
 
 // OutputPair maps one input frame to its produced output, with the output's

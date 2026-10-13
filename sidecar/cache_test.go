@@ -11,7 +11,7 @@ import (
 // and skipped on subsequent calls while its content is unchanged.
 func TestUploadFileCached(t *testing.T) {
 	dataDir := t.TempDir()
-	_, addr := newTestServer(t, dataDir, Capabilities{NodeID: "w1"})
+	_, addr, sec := newTestServer(t, dataDir, Capabilities{NodeID: "w1"})
 	ctx := context.Background()
 
 	master := filepath.Join(t.TempDir(), "masterDark.xisf")
@@ -19,14 +19,14 @@ func TestUploadFileCached(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	up, err := UploadFileCached(ctx, addr, master)
+	up, err := sec.UploadFileCached(ctx, addr, master)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !up {
 		t.Fatal("first UploadFileCached should transfer the file")
 	}
-	up, err = UploadFileCached(ctx, addr, master)
+	up, err = sec.UploadFileCached(ctx, addr, master)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestUploadFileCached(t *testing.T) {
 	if err := os.WriteFile(master, []byte("master-dark-bytes-v2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	up, err = UploadFileCached(ctx, addr, master)
+	up, err = sec.UploadFileCached(ctx, addr, master)
 	if err != nil {
 		t.Fatal(err)
 	}

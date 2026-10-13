@@ -1,9 +1,8 @@
 // Command wbpp-sidecar is the networking companion for the Distributed-WBPP
 // PixInsight cluster. PixInsight's scripting runtime (PJSR) can act only as a
 // network *client*, so this self-contained binary provides the two things it
-// cannot: LAN auto-discovery (UDP multicast beacons) and peer-to-peer file
-// transfer (HTTP with SHA-256 integrity). Jalon 1 exercises exactly those two
-// capabilities, with no PixInsight involved.
+// cannot: LAN auto-discovery (signed UDP multicast beacons) and peer-to-peer
+// file transfer (mutual TLS, every request signed with the cluster key).
 package main
 
 import (
@@ -34,11 +33,17 @@ func main() {
 		runCtl(os.Args[2:])
 		return
 	}
+	// `keygen` / `keycheck`: create or validate a cluster key (file channel, for PJSR).
+	if len(os.Args) > 1 && (os.Args[1] == "keygen" || os.Args[1] == "keycheck") {
+		runKeyCmd(os.Args[1], os.Args[2:])
+		return
+	}
 
 	var (
 		showVersion = flag.Bool("version", false, "print version and exit")
 		mode        = flag.String("mode", "", "server | worker")
-		token       = flag.String("token", "default", "shared cluster token (peers with a different token are ignored)")
+		secretFile  = flag.String("secret-file", "", "file holding the cluster key (read, then deleted); required by every daemon mode")
+		listen      = flag.String("listen", "", "worker: comma-separated IPv4 addresses to listen on (default: every private LAN address + 127.0.0.1)")
 		dir         = flag.String("dir", "./sidecar-data", "directory for received files")
 		port        = flag.Int("port", 0, "worker HTTP port (0 = OS-assigned)")
 		piVersion   = flag.String("pi-version", "unknown", "PixInsight version (handshake identity)")
@@ -83,27 +88,45 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	var sec *ClusterSecurity
+	if *mode == "worker" || *mode == "server" || *mode == "agent" {
+		var err error
+		if sec, err = loadSecret(*secretFile); err != nil {
+			log.Fatalf("%s: %v", *mode, err)
+		}
+	}
+
 	switch *mode {
 	case "worker":
-		runWorker(ctx, workerConfig{
-			token: *token, dir: *dir, port: *port, nodeID: nodeID,
+		var ips []string
+		if *listen != "" {
+			for _, a := range strings.Split(*listen, ",") {
+				if a = strings.TrimSpace(a); a != "" {
+					ips = append(ips, a)
+				}
+			}
+		} else {
+			ips = clusterListenIPs()
+		}
+		runWorker(ctx, sec, workerConfig{
+			dir: *dir, port: *port, nodeID: nodeID, listen: ips,
 			pi: *piVersion, wbpp: *wbppVersion, executor: *executor, controlPort: *controlPort,
 		})
 	case "server":
 		sc := serverConfig{
-			token: *token, dir: *dir, nodeID: nodeID, pi: *piVersion, wbpp: *wbppVersion,
+			dir: *dir, nodeID: nodeID, pi: *piVersion, wbpp: *wbppVersion,
 			sendFile: *sendFile, target: *target, listFor: *listFor, discoverTO: *discoverTO, force: *force,
 			distribute: *distribute, reference: *reference, op: *op, outDir: *outDir,
 			postfix: *postfix, outExt: *outExt, jsonOut: *jsonOut, outFile: *outFile, jobFile: *jobFile,
 		}
-		runServer(ctx, sc)
+		runServer(ctx, sec, sc)
 	case "agent":
 		sc := serverConfig{
-			token: *token, dir: *dir, nodeID: nodeID, pi: *piVersion, wbpp: *wbppVersion,
+			dir: *dir, nodeID: nodeID, pi: *piVersion, wbpp: *wbppVersion,
 			discoverTO: *discoverTO, op: *op, outDir: *outDir, postfix: *postfix, outExt: *outExt,
 			peers: *peers,
 		}
-		runAgent(ctx, sc, *controlPort)
+		runAgent(ctx, sec, sc, *controlPort)
 	default:
 		fmt.Fprintln(os.Stderr, "usage: wbpp-sidecar --mode server|worker|agent [flags]")
 		flag.PrintDefaults()
@@ -111,22 +134,68 @@ func main() {
 	}
 }
 
+// loadSecret reads the cluster key from path, deletes the file (best effort, so
+// the key does not linger on disk) and builds the cluster security material.
+func loadSecret(path string) (*ClusterSecurity, error) {
+	if path == "" {
+		return nil, errNoSecret
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("cluster key: %v", err)
+	}
+	_ = os.Remove(path)
+	sec, err := NewClusterSecurity(string(raw))
+	if err != nil {
+		return nil, fmt.Errorf("cluster key: %v", err)
+	}
+	return sec, nil
+}
+
+// runKeyCmd implements `keygen [--out-file F]` and `keycheck --in-file F [--out-file G]`.
+func runKeyCmd(cmd string, args []string) {
+	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+	outFile := fs.String("out-file", "", "write the result to this file")
+	inFile := fs.String("in-file", "", "keycheck: file holding the key to validate")
+	_ = fs.Parse(args)
+	if cmd == "keygen" {
+		key, err := GenerateClusterKey()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "keygen:", err)
+			os.Exit(1)
+		}
+		writeOut(*outFile, []byte(key))
+		return
+	}
+	res := map[string]any{"ok": true}
+	raw, err := os.ReadFile(*inFile)
+	if err == nil {
+		_, err = NormalizeClusterKey(string(raw))
+	}
+	if err != nil {
+		res = map[string]any{"ok": false, "error": err.Error()}
+	}
+	b, _ := json.Marshal(res)
+	writeOut(*outFile, b)
+}
+
 type workerConfig struct {
-	token, dir       string
+	dir              string
 	port             int
+	listen           []string
 	nodeID, pi, wbpp string
 	executor         string
 	controlPort      int
 }
 
-func runWorker(ctx context.Context, wc workerConfig) {
+func runWorker(ctx context.Context, sec *ClusterSecurity, wc workerConfig) {
 	caps := Capabilities{
 		Magic: BeaconMagic, Protocol: ProtocolVersion, NodeID: wc.nodeID,
 		Role: RoleWorker, OS: runtime.GOOS, PIVersion: wc.pi, WBPPVersion: wc.wbpp,
 	}
-	token, dir, pi, wbpp := wc.token, wc.dir, wc.pi, wc.wbpp
+	dir, pi, wbpp := wc.dir, wc.pi, wc.wbpp
 	nodeID := wc.nodeID
-	ts, err := NewTransportServer(caps, dir, wc.port)
+	ts, err := NewTransportServer(caps, dir, wc.port, wc.listen, sec)
 	if err != nil {
 		log.Fatalf("worker: %v", err)
 	}
@@ -141,8 +210,8 @@ func runWorker(ctx context.Context, wc workerConfig) {
 	}
 
 	actualPort := ts.Port()
-	log.Printf("worker %s listening on :%d (token=%q, os=%s, pi=%s, wbpp=%s, executor=%s)",
-		nodeID, actualPort, token, runtime.GOOS, pi, wbpp, wc.executor)
+	log.Printf("worker %s listening on port %d of %s (os=%s, pi=%s, wbpp=%s, executor=%s)",
+		nodeID, actualPort, strings.Join(append(ts.Addrs(), "127.0.0.1"), ", "), runtime.GOOS, pi, wbpp, wc.executor)
 
 	go func() {
 		if err := ts.Serve(); err != nil {
@@ -151,12 +220,12 @@ func runWorker(ctx context.Context, wc workerConfig) {
 	}()
 
 	beacon := Beacon{
-		Magic: BeaconMagic, Protocol: ProtocolVersion, Token: token, NodeID: nodeID,
-		Role: RoleWorker, Host: hostname(), HTTPPort: actualPort,
+		Magic: BeaconMagic, Protocol: ProtocolVersion, NodeID: nodeID,
+		Role: RoleWorker, Host: hostname(), HTTPPort: actualPort, Addrs: ts.Addrs(),
 		OS: runtime.GOOS, PIVersion: pi, WBPPVersion: wbpp,
 	}
 	go func() {
-		if err := Advertise(ctx, beacon); err != nil {
+		if err := Advertise(ctx, sec, beacon); err != nil {
 			log.Printf("worker: advertise stopped: %v", err)
 		}
 	}()
@@ -169,22 +238,22 @@ func runWorker(ctx context.Context, wc workerConfig) {
 }
 
 type serverConfig struct {
-	token, dir, nodeID, pi, wbpp string
-	sendFile, target, peers      string
-	listFor, discoverTO          time.Duration
-	force                        bool
-	distribute, reference, op    string
-	outDir, postfix, outExt      string
-	jsonOut                      bool
-	outFile, jobFile             string
+	dir, nodeID, pi, wbpp     string
+	sendFile, target, peers   string
+	listFor, discoverTO       time.Duration
+	force                     bool
+	distribute, reference, op string
+	outDir, postfix, outExt   string
+	jsonOut                   bool
+	outFile, jobFile          string
 }
 
-func runServer(ctx context.Context, sc serverConfig) {
+func runServer(ctx context.Context, sec *ClusterSecurity, sc serverConfig) {
 	self := Capabilities{Protocol: ProtocolVersion, NodeID: sc.nodeID, Role: RoleServer, OS: runtime.GOOS, PIVersion: sc.pi, WBPPVersion: sc.wbpp}
 
 	// Explicit single-file send to an explicit target (debugging / CI).
 	if sc.target != "" && sc.distribute == "" {
-		dispatch(ctx, self, sc.target, sc.sendFile, sc.force)
+		dispatch(ctx, sec, self, sc.target, sc.sendFile, sc.force)
 		return
 	}
 
@@ -192,7 +261,7 @@ func runServer(ctx context.Context, sc serverConfig) {
 	bctx, cancelBrowse := context.WithCancel(ctx)
 	defer cancelBrowse()
 	go func() {
-		if err := Browse(bctx, sc.token, reg, func(n NodeInfo) {
+		if err := Browse(bctx, sec, reg, func(n NodeInfo) {
 			log.Printf("discovered %s %s at %s (os=%s, pi=%s, wbpp=%s)",
 				n.Role, n.NodeID, n.Addr, n.OS, n.PIVersion, n.WBPPVersion)
 		}); err != nil {
@@ -202,7 +271,7 @@ func runServer(ctx context.Context, sc serverConfig) {
 
 	// --list mode: just observe the cluster for a while, then print it.
 	if sc.listFor > 0 {
-		log.Printf("listing nodes for %s (token=%q)...", sc.listFor, sc.token)
+		log.Printf("listing nodes for %s...", sc.listFor)
 		select {
 		case <-time.After(sc.listFor):
 		case <-ctx.Done():
@@ -227,13 +296,13 @@ func runServer(ctx context.Context, sc serverConfig) {
 
 	// --job-file: one-shot DistributeJob from a file (the PJSR WBPPShim path).
 	if sc.jobFile != "" {
-		distributeFromFile(ctx, self, reg, sc.jobFile, sc.outFile, sc.discoverTO)
+		distributeFromFile(ctx, sec, self, reg, sc.jobFile, sc.outFile, sc.discoverTO)
 		return
 	}
 
 	// --distribute: shard a directory of frames across all discovered workers.
 	if sc.distribute != "" {
-		runDistribute(ctx, self, reg, sc)
+		runDistribute(ctx, sec, self, reg, sc)
 		return
 	}
 
@@ -245,13 +314,13 @@ func runServer(ctx context.Context, sc serverConfig) {
 	if worker == nil {
 		log.Fatalf("no worker discovered within %s", sc.discoverTO)
 	}
-	dispatch(ctx, self, worker.Addr, sc.sendFile, sc.force)
+	dispatch(ctx, sec, self, worker.Addr, sc.sendFile, sc.force)
 }
 
 // runDistribute is the CLI entry point: it gathers inputs, discovers workers and
 // runs one distributed job, logging progress. The reusable engine lives in
 // distributeJob (distribute.go) so the localhost control API shares it.
-func runDistribute(ctx context.Context, self Capabilities, reg *Registry, sc serverConfig) {
+func runDistribute(ctx context.Context, sec *ClusterSecurity, self Capabilities, reg *Registry, sc serverConfig) {
 	inputs, err := listFrames(sc.distribute)
 	if err != nil {
 		log.Fatalf("distribute: %v", err)
@@ -267,7 +336,7 @@ func runDistribute(ctx context.Context, self Capabilities, reg *Registry, sc ser
 		Inputs: inputs, Reference: sc.reference, Op: sc.op,
 		OutDir: sc.outDir, Postfix: sc.postfix, OutExt: sc.outExt, Force: sc.force,
 	}
-	rep, err := distributeJob(ctx, self, workers, job, log.Printf)
+	rep, err := distributeJob(ctx, sec, self, workers, job, log.Printf)
 	if err != nil {
 		log.Fatalf("distribute: %v", err)
 	}
@@ -367,8 +436,8 @@ func baseOrEmpty(path string) string {
 }
 
 // dispatch performs the strict version handshake then uploads the file.
-func dispatch(ctx context.Context, self Capabilities, addr, sendFile string, force bool) {
-	caps, err := FetchCapabilities(ctx, addr)
+func dispatch(ctx context.Context, sec *ClusterSecurity, self Capabilities, addr, sendFile string, force bool) {
+	caps, err := sec.FetchCapabilities(ctx, addr)
 	if err != nil {
 		log.Fatalf("handshake with %s failed: %v", addr, err)
 	}
@@ -386,7 +455,7 @@ func dispatch(ctx context.Context, self Capabilities, addr, sendFile string, for
 	}
 	log.Printf("uploading %q (%s) to %s ...", sendFile, humanBytes(st.Size()), addr)
 	start := time.Now()
-	res, err := UploadFile(ctx, addr, sendFile)
+	res, err := sec.UploadFile(ctx, addr, sendFile)
 	if err != nil {
 		log.Fatalf("upload failed: %v", err)
 	}
