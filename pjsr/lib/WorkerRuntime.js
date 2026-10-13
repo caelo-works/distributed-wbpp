@@ -8,7 +8,7 @@
  * (SubframeSelector -> metrics) and integration (ImageIntegration -> master).
  *
  * Depends on the includes + helpers the entry provides before this file:
- * SidecarBridge, ProcessSerializer, FileLogger, and scriptParentDir()/piVersion().
+ * SidecarBridge, ProcessSerializer, FileLogger, and dwbppLogDir()/piVersionString().
  */
 
 // Friendly label for a job op, shown in the client activity log.
@@ -37,6 +37,47 @@ function ensureDirectory( path )
 {
    if ( !File.directoryExists( path ) )
       File.createDirectory( path, true );
+}
+
+// The process each job operation may run (anything else is rejected).
+var WBPP_OP_PROCESS = {
+   registration: "StarAlignment", calibration: "ImageCalibration", localnorm: "LocalNormalization",
+   integration: "ImageIntegration", light_integration: "ImageIntegration",
+   drizzle_integration: "DrizzleIntegration"
+};
+
+// A manifest file name must be a plain name inside the data dir: no separator,
+// no parent reference, nothing empty.
+function checkJobFileName( n )
+{
+   var s = String( n );
+   if ( s.length == 0 || s == "." || s == ".." || /[\/\\:\0]/.test( s ) )
+      throw new Error( "rejected job: invalid file name '" + s + "'" );
+   return s;
+}
+
+// Validate the parts of a manifest that are not process parameters: every file
+// name it carries must be a plain name.
+function checkJobFiles( job )
+{
+   var names = job.input_names || [];
+   for ( var i = 0; i < names.length; ++i )
+      checkJobFileName( names[ i ] );
+   if ( job.reference_name )
+      checkJobFileName( job.reference_name );
+   var refs = job.file_ref_fields || {};
+   for ( var f in refs )
+      if ( refs.hasOwnProperty( f ) )
+         checkJobFileName( refs[ f ] );
+}
+
+// Rebuild the job's process from its data description; the process id must be
+// the one the operation runs.
+function rebuildJobProcess( job )
+{
+   if ( !WBPP_OP_PROCESS.hasOwnProperty( job.op ) )
+      throw new Error( "rejected job: unknown operation '" + job.op + "'" );
+   return deserializeProcess( job.process, WBPP_OP_PROCESS[ job.op ] );
 }
 
 // Last path component, tolerant of both / and \ separators (paths embedded in a
@@ -138,7 +179,7 @@ function measureFrames( bridge, job )
  */
 function drizzleIntegrate( bridge, job )
 {
-   var DI = deserializeProcess( job.process_source, "DI" );
+   var DI = rebuildJobProcess( job ).process;
    var rows = [];
    for ( var i = 0; i < job.input_names.length; ++i )
    {
@@ -188,7 +229,7 @@ function drizzleIntegrate( bridge, job )
 function integrateFrames( bridge, job )
 {
    var isLight = ( job.op == "light_integration" );
-   var II = deserializeProcess( job.process_source, "II" );
+   var II = rebuildJobProcess( job ).process;
 
    // rebuild the images rows against the local uploaded copies. For LIGHTS the rows
    // carry the per-frame companions [enabled, path, .xdrz, .xnml] — shipped via
@@ -253,6 +294,7 @@ function integrateFrames( bridge, job )
 
 function processJob( bridge, job )
 {
+   checkJobFiles( job );
    if ( job.op == "measurements" )
       return measureFrames( bridge, job );
    if ( job.op == "integration" || job.op == "light_integration" )
@@ -260,22 +302,27 @@ function processJob( bridge, job )
    if ( job.op == "drizzle_integration" )
       return drizzleIntegrate( bridge, job );
 
-   var P;
-   if ( job.process_source && job.process_source.length > 0 )
-      P = deserializeProcess( job.process_source, "P" );
-   else
-      P = new StarAlignment; // bare --distribute registration test
+   var rebuilt = rebuildJobProcess( job );
+   var P = rebuilt.process;
+
+   // the field names the manifest refers to must be parameters of that process
+   function checkField( f )
+   {
+      if ( !processHasParameter( rebuilt, f ) )
+         throw new Error( "rejected job: unknown parameter " + job.process.id + "." + f );
+      return f;
+   }
 
    // rewrite shared-file refs (masters / reference) to local uploaded copies
    var refs = job.file_ref_fields || {};
    for ( var field in refs )
       if ( refs.hasOwnProperty( field ) )
-         P[ field ] = bridge.dataDir + "/" + refs[ field ];
+         P[ checkField( field ) ] = bridge.dataDir + "/" + refs[ field ];
    // legacy single reference (CLI registration)
-   if ( job.reference_name && job.reference_name.length > 0 && !( refs && refs.referenceImage ) )
+   if ( job.reference_name && job.reference_name.length > 0 && !refs.hasOwnProperty( "referenceImage" ) )
    {
-      P.referenceImage = bridge.dataDir + "/" + job.reference_name;
-      P.referenceIsFile = true;
+      P[ checkField( "referenceImage" ) ] = bridge.dataDir + "/" + job.reference_name;
+      P[ checkField( "referenceIsFile" ) ] = true;
    }
 
    // output naming/dir so the reported name == the file the process writes.
@@ -286,7 +333,11 @@ function processJob( bridge, job )
    var postfix = ( typeof job.output_postfix == "string" ) ? job.output_postfix : "_r";
    var ext     = ( typeof job.output_ext == "string" && job.output_ext.length ) ? job.output_ext : ".xisf";
    // most ops expose "outputDirectory"; the manifest may name a different field.
-   try { P[ ( job.dir_field && job.dir_field.length ) ? job.dir_field : "outputDirectory" ] = bridge.dataDir; } catch ( e ) {}
+   var dirField = ( job.dir_field && job.dir_field.length ) ? job.dir_field : "outputDirectory";
+   if ( processHasParameter( rebuilt, dirField ) )
+      P[ dirField ] = bridge.dataDir;
+   else if ( job.dir_field && job.dir_field.length )
+      checkField( dirField );
    try { P.outputPrefix = prefix; } catch ( e ) {}
    try { P.outputPostfix = postfix; } catch ( e ) {}
    try { P.outputExtension = ext; } catch ( e ) {}
@@ -295,7 +346,7 @@ function processJob( bridge, job )
    // rebuild the target list for this shard. Row shape follows path_index:
    //   1 -> [enabled, path]        (ImageCalibration.targetFrames)
    //   2 -> [enabled, isFile, path](StarAlignment.targets)
-   var tf   = ( job.targets_field && job.targets_field.length ) ? job.targets_field : "targets";
+   var tf   = checkField( ( job.targets_field && job.targets_field.length ) ? job.targets_field : "targets" );
    var pidx = job.path_index ? job.path_index : 2;
    var rows = [];
    for ( var i = 0; i < job.input_names.length; ++i )
@@ -408,8 +459,8 @@ constructor( bridge )
 
    var self = this;
 
-   // auto-export to a shared log file on the deployment drive (e.g. Y:\...\logs)
-   this.logger = new FileLogger( scriptParentDir() + "/logs", "client",
+   // session log in the per-user log folder (never under the PixInsight install)
+   this.logger = new FileLogger( dwbppLogDir(), "client",
       [ "Distributed-WBPP CLIENT",
         "PixInsight " + piVersionString() + " / WBPP " + wbppVersionString(),
         "Data dir: " + bridge.dataDir, "" ] );
@@ -431,7 +482,7 @@ constructor( bridge )
 
    this.logLine( "Client started — waiting for the server (data: " + bridge.dataDir + ")" );
    if ( this.logger.ok )
-      this.logLine( "Log auto → " + this.logger.path );
+      this.logLine( "Log file: " + this.logger.path );
 
    this.busy = false;
    this.timer = new Timer;
@@ -459,7 +510,7 @@ constructor( bridge )
                var nOut = countFrames( outputs );
                self.jobs += 1;
                self.frames += nOut;
-               self.logLine( "✓ " + lbl + " : " + nOut + " frame(s) en " + T.text );
+               self.logLine( "✓ " + lbl + " : " + nOut + " frame(s) in " + T.text );
             }
             catch ( e )
             {

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,13 +20,42 @@ import (
 // entries that have not been re-announced within NodeTTL. It is safe for
 // concurrent use.
 type Registry struct {
-	mu    sync.Mutex
-	nodes map[string]NodeInfo
-	now   func() time.Time // injectable clock for tests
+	mu           sync.Mutex
+	nodes        map[string]NodeInfo
+	incompatible map[string]IncompatibleNode // keyed by addr + reason
+	now          func() time.Time            // injectable clock for tests
 }
 
 func NewRegistry() *Registry {
-	return &Registry{nodes: map[string]NodeInfo{}, now: time.Now}
+	return &Registry{nodes: map[string]NodeInfo{}, incompatible: map[string]IncompatibleNode{}, now: time.Now}
+}
+
+// NoteIncompatible records a node that cannot join this cluster. Returns true
+// the first time this (addr, reason) is seen, so callers log it only once.
+func (r *Registry) NoteIncompatible(addr, reason string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k := addr + "|" + reason
+	_, existed := r.incompatible[k]
+	r.incompatible[k] = IncompatibleNode{Addr: addr, Reason: reason, LastSeen: r.now()}
+	return !existed
+}
+
+// Incompatible returns the incompatible nodes seen within NodeTTL (never nil).
+func (r *Registry) Incompatible() []IncompatibleNode {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cutoff := r.now().Add(-NodeTTL)
+	out := []IncompatibleNode{}
+	for k, n := range r.incompatible {
+		if n.LastSeen.Before(cutoff) {
+			delete(r.incompatible, k)
+			continue
+		}
+		out = append(out, n)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Addr+out[i].Reason < out[j].Addr+out[j].Reason })
+	return out
 }
 
 // Upsert records or refreshes a peer. Returns true if this is a newly-seen node.
@@ -52,18 +84,42 @@ func (r *Registry) Alive() []NodeInfo {
 	return out
 }
 
-// parseBeacon validates a raw datagram against magic/protocol/token and returns
-// the decoded beacon. ok is false for anything that is not a beacon meant for
-// this cluster, so callers can silently ignore foreign multicast traffic.
-func parseBeacon(data []byte, token string) (Beacon, bool) {
-	var b Beacon
-	if err := json.Unmarshal(data, &b); err != nil {
-		return Beacon{}, false
+// classifyBeacon checks a raw datagram received from src. It returns ok for a
+// beacon of this cluster (valid HMAC, magic, protocol, and a source address the
+// node advertises). For a Distributed WBPP node that cannot join (another
+// protocol version, or another cluster key) it returns a non-empty reason so
+// the user can be told; anything else (unrelated multicast traffic, a beacon
+// replayed from another address) is silently ignored.
+func classifyBeacon(data []byte, sec *ClusterSecurity, src net.IP) (b Beacon, reason string, ok bool) {
+	js, mac := data, []byte(nil)
+	if i := bytes.LastIndexByte(data, '\n'); i >= 0 {
+		js, mac = data[:i], data[i+1:]
 	}
-	if b.Magic != BeaconMagic || b.Protocol != ProtocolVersion || b.Token != token {
-		return Beacon{}, false
+	if err := json.Unmarshal(js, &b); err != nil || b.Magic != BeaconMagic {
+		return Beacon{}, "", false
 	}
-	return b, true
+	switch {
+	case b.Protocol < ProtocolVersion:
+		return Beacon{}, fmt.Sprintf("older version (protocol %d)", b.Protocol), false
+	case b.Protocol > ProtocolVersion:
+		return Beacon{}, fmt.Sprintf("newer version (protocol %d)", b.Protocol), false
+	}
+	if mac == nil || !sec.beaconMACValid(js, mac) {
+		return Beacon{}, "different cluster key", false
+	}
+	if len(b.Addrs) > 0 && src != nil {
+		from := false
+		for _, a := range b.Addrs {
+			if ip := net.ParseIP(a); ip != nil && ip.Equal(src) {
+				from = true
+				break
+			}
+		}
+		if !from {
+			return Beacon{}, "", false
+		}
+	}
+	return b, "", true
 }
 
 // multicastInterfaces returns the up, multicast-capable interfaces that have an
@@ -112,7 +168,7 @@ func ifaceIPv4(ifi net.Interface) net.IP {
 // Uses x/net/ipv4 so we can explicitly enable multicast loopback — without it,
 // two processes on the SAME Windows host never see each other's beacons (the OS
 // default for IP_MULTICAST_LOOP is unreliable across the Hyper-V/WSL switches).
-func Advertise(ctx context.Context, b Beacon) error {
+func Advertise(ctx context.Context, sec *ClusterSecurity, b Beacon) error {
 	group, err := net.ResolveUDPAddr("udp4", MulticastAddr)
 	if err != nil {
 		return err
@@ -136,7 +192,7 @@ func Advertise(ctx context.Context, b Beacon) error {
 	}
 	log.Printf("discovery: advertising on %d interface(s): %s", len(names), strings.Join(names, ", "))
 
-	payload, _ := json.Marshal(b)
+	payload := sec.signBeacon(b)
 	send := func() {
 		if len(ifaces) == 0 {
 			_, _ = p.WriteTo(payload, nil, group)
@@ -165,7 +221,7 @@ func Advertise(ctx context.Context, b Beacon) error {
 // Browse joins the cluster group on every multicast-capable interface using a
 // SINGLE socket (avoiding the Windows multi-socket-same-port ambiguity) and
 // keeps reg up to date until ctx is done.
-func Browse(ctx context.Context, token string, reg *Registry, onNew func(NodeInfo)) error {
+func Browse(ctx context.Context, sec *ClusterSecurity, reg *Registry, onNew func(NodeInfo)) error {
 	group, err := net.ResolveUDPAddr("udp4", MulticastAddr)
 	if err != nil {
 		return err
@@ -213,8 +269,11 @@ func Browse(ctx context.Context, token string, reg *Registry, onNew func(NodeInf
 		if ua == nil {
 			continue
 		}
-		b, ok := parseBeacon(buf[:n], token)
+		b, reason, ok := classifyBeacon(buf[:n], sec, ua.IP)
 		if !ok {
+			if reason != "" && reg.NoteIncompatible(ua.IP.String(), reason) {
+				log.Printf("discovery: ignoring Distributed WBPP node at %s: %s", ua.IP, reason)
+			}
 			continue
 		}
 		info := NodeInfo{Beacon: b, Addr: net.JoinHostPort(ua.IP.String(), strconv.Itoa(b.HTTPPort))}

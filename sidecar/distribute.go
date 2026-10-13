@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,21 +14,22 @@ import (
 // PixInsight process) over Inputs, sharded across the given workers, collecting
 // outputs into OutDir.
 type DistributeJob struct {
-	Inputs        []string `json:"inputs"`         // absolute paths on the server (sharded)
-	Reference     string   `json:"reference"`      // legacy single shared reference frame (path)
-	Op            string   `json:"op"`             // "registration" | "calibration" | ...
-	ProcessSource string   `json:"process_source"` // PJSR-serialized process (opaque here)
-	OutDir        string   `json:"out_dir"`
-	Prefix        string   `json:"prefix"`
-	Postfix       string   `json:"postfix"`
-	OutExt        string   `json:"out_ext"`
-	Force         bool     `json:"force"` // bypass the version handshake
+	Inputs    []string        `json:"inputs"`            // absolute paths on the server (sharded)
+	Reference string          `json:"reference"`         // legacy single shared reference frame (path)
+	Op        string          `json:"op"`                // "registration" | "calibration" | ...
+	Process   json.RawMessage `json:"process,omitempty"` // {"id","params"} (opaque here)
+	OutDir    string          `json:"out_dir"`
+	Prefix    string          `json:"prefix"`
+	Postfix   string          `json:"postfix"`
+	OutExt    string          `json:"out_ext"`
+	Force     bool            `json:"force"` // bypass the version handshake
 
 	// Generic distribution (passed through to the PJSR worker):
-	SharedFiles   []string          `json:"shared_files"`    // absolute paths uploaded once to every worker (cached by checksum)
-	FileRefFields map[string]string `json:"file_ref_fields"` // process field -> absolute path of a shared file (master/reference)
-	TargetsField  string            `json:"targets_field"`   // "targetFrames" | "targets"
-	PathIndex     int               `json:"path_index"`      // path index within a target row
+	SharedFiles   []string          `json:"shared_files"`        // absolute paths uploaded once to every worker (cached by checksum)
+	FileRefFields map[string]string `json:"file_ref_fields"`     // process field -> absolute path of a shared file (master/reference)
+	TargetsField  string            `json:"targets_field"`       // "targetFrames" | "targets"
+	PathIndex     int               `json:"path_index"`          // path index within a target row
+	DirField      string            `json:"dir_field,omitempty"` // process field receiving the output directory
 	Drizzle       bool              `json:"drizzle"`
 
 	// WholeJob: this is one indivisible job (e.g. an ImageIntegration) that must run
@@ -68,7 +70,7 @@ type logf func(format string, args ...any)
 // worker, shards inputs round-robin, pushes (reference + shard) to each worker,
 // runs the operation there, then pulls and verifies every output. It never
 // calls os.Exit/Fatal — failures are recorded in the returned report.
-func distributeJob(ctx context.Context, self Capabilities, workers []NodeInfo, job DistributeJob, lg logf) (JobReport, error) {
+func distributeJob(ctx context.Context, sec *ClusterSecurity, self Capabilities, workers []NodeInfo, job DistributeJob, lg logf) (JobReport, error) {
 	if lg == nil {
 		lg = func(string, ...any) {}
 	}
@@ -84,15 +86,27 @@ func distributeJob(ctx context.Context, self Capabilities, workers []NodeInfo, j
 	}
 
 	// Handshake: refuse to dispatch to any node whose versions differ (unless forced).
+	// A worker that cannot be reached (down, TLS refused, wrong key) is skipped, so
+	// one bad peer never sinks the job while others are healthy.
+	reachable := workers[:0:0]
+	var lastErr error
 	for i := range workers {
-		caps, err := FetchCapabilities(ctx, workers[i].Addr)
+		caps, err := sec.FetchCapabilities(ctx, workers[i].Addr)
 		if err != nil {
-			return rep, fmt.Errorf("handshake with %s: %w", workers[i].Addr, err)
+			lg("skipping worker %s: handshake failed: %v", workers[i].Addr, err)
+			lastErr = fmt.Errorf("%s: %w", workers[i].Addr, err)
+			continue
 		}
 		if m := versionMismatch(self, caps); m != "" && !job.Force {
 			return rep, fmt.Errorf("version handshake refused for %s: %s", workers[i].Addr, m)
 		}
+		reachable = append(reachable, workers[i])
 	}
+	if len(reachable) == 0 {
+		return rep, fmt.Errorf("no reachable worker (handshake failed with all %d; last: %v)", len(workers), lastErr)
+	}
+	workers = reachable
+	rep.Workers = len(workers)
 
 	lg("distributing %d frame(s) across %d worker(s)", len(job.Inputs), len(workers))
 	// Split proportionally to each worker's measured throughput (equal until known), so
@@ -115,7 +129,7 @@ func distributeJob(ctx context.Context, self Capabilities, workers []NodeInfo, j
 		go func(wi int, w NodeInfo, files []string) {
 			defer wg.Done()
 			t := time.Now()
-			outs, collected, failed := runWorkerShard(ctx, self, wi, w, files, job, lg)
+			outs, collected, failed := runWorkerShard(ctx, sec, wi, w, files, job, lg)
 			if multi && collected > 0 { // feed the per-worker throughput estimate
 				recordThroughput(w.NodeID, collected, time.Since(t))
 			}
@@ -134,7 +148,7 @@ func distributeJob(ctx context.Context, self Capabilities, workers []NodeInfo, j
 // runWorkerShard pushes the shared files + this worker's shard, runs the op, and pulls
 // back + verifies the outputs. It returns a partial result (no shared state), so several
 // workers can run concurrently.
-func runWorkerShard(ctx context.Context, self Capabilities, wi int, w NodeInfo, files []string, job DistributeJob, lg logf) (outputs []OutputRecord, collected, failed int) {
+func runWorkerShard(ctx context.Context, sec *ClusterSecurity, wi int, w NodeInfo, files []string, job DistributeJob, lg logf) (outputs []OutputRecord, collected, failed int) {
 	lg("worker %s <- %d frame(s)", w.NodeID, len(files))
 	t0 := time.Now()
 
@@ -145,7 +159,7 @@ func runWorkerShard(ctx context.Context, self Capabilities, wi int, w NodeInfo, 
 		shared = append([]string{job.Reference}, shared...)
 	}
 	for _, sf := range shared {
-		up, err := UploadFileCached(ctx, w.Addr, sf)
+		up, err := sec.UploadFileCached(ctx, w.Addr, sf)
 		if err != nil {
 			return shardError(files, w.NodeID, "shared upload "+filepath.Base(sf)+": "+err.Error())
 		}
@@ -164,7 +178,7 @@ func runWorkerShard(ctx context.Context, self Capabilities, wi int, w NodeInfo, 
 	inputNames := make([]string, 0, len(files))
 	cached := 0
 	for _, f := range files {
-		up, err := UploadFileCached(ctx, w.Addr, f)
+		up, err := sec.UploadFileCached(ctx, w.Addr, f)
 		if err != nil {
 			return shardError(files, w.NodeID, "upload "+filepath.Base(f)+": "+err.Error())
 		}
@@ -177,12 +191,12 @@ func runWorkerShard(ctx context.Context, self Capabilities, wi int, w NodeInfo, 
 
 	// 3) run the operation on the shard
 	tWork := time.Now()
-	res, err := SendWork(ctx, w.Addr, WorkManifest{
+	res, err := sec.SendWork(ctx, w.Addr, WorkManifest{
 		JobID: fmt.Sprintf("%s-w%d", job.Op, wi), Op: job.Op,
-		ProcessSource: job.ProcessSource, ReferenceName: baseOrEmpty(job.Reference),
+		Process: job.Process, ReferenceName: baseOrEmpty(job.Reference),
 		InputNames: inputNames, OutputPrefix: job.Prefix, OutputPostfix: job.Postfix, OutputExt: job.OutExt,
 		TargetsField: job.TargetsField, PathIndex: job.PathIndex,
-		FileRefFields: fileRefFields, Drizzle: job.Drizzle,
+		FileRefFields: fileRefFields, Drizzle: job.Drizzle, DirField: job.DirField,
 	})
 	if err != nil {
 		return shardError(files, w.NodeID, "work: "+err.Error())
@@ -194,7 +208,7 @@ func runWorkerShard(ctx context.Context, self Capabilities, wi int, w NodeInfo, 
 	for _, pair := range res.Outputs {
 		dest := filepath.Join(job.OutDir, pair.Output)
 		rec := OutputRecord{Input: pair.Input, Output: pair.Output, Worker: w.NodeID, Path: dest}
-		got, err := DownloadFile(ctx, w.Addr, pair.Output, dest)
+		got, err := sec.DownloadFile(ctx, w.Addr, pair.Output, dest)
 		switch {
 		case err != nil:
 			rec.Error = "download: " + err.Error()

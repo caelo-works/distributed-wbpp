@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,7 +14,7 @@ import (
 // server's runDistribute performs, minus discovery.
 func TestWorkRoundTrip(t *testing.T) {
 	dataDir := t.TempDir()
-	_, addr := newTestServer(t, dataDir, Capabilities{NodeID: "w1"})
+	_, addr, sec := newTestServer(t, dataDir, Capabilities{NodeID: "w1"})
 	ctx := context.Background()
 
 	// create two input "frames" locally and upload them to the worker
@@ -24,14 +25,14 @@ func TestWorkRoundTrip(t *testing.T) {
 		if err := os.WriteFile(p, []byte("frame:"+name), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := UploadFile(ctx, addr, p); err != nil {
+		if _, err := sec.UploadFile(ctx, addr, p); err != nil {
 			t.Fatalf("upload %s: %v", name, err)
 		}
 		names = append(names, name)
 	}
 
-	res, err := SendWork(ctx, addr, WorkManifest{
-		JobID: "reg-w0", Op: "registration",
+	res, err := sec.SendWork(ctx, addr, WorkManifest{
+		JobID: "reg-w0", Op: "registration", Process: json.RawMessage(`{"id":"StarAlignment","params":{}}`),
 		InputNames: names, OutputPostfix: "_r", OutputExt: ".xisf",
 	})
 	if err != nil {
@@ -47,7 +48,7 @@ func TestWorkRoundTrip(t *testing.T) {
 			t.Fatalf("unexpected output name %q for input %q", pair.Output, pair.Input)
 		}
 		dest := filepath.Join(outDir, pair.Output)
-		got, err := DownloadFile(ctx, addr, pair.Output, dest)
+		got, err := sec.DownloadFile(ctx, addr, pair.Output, dest)
 		if err != nil {
 			t.Fatalf("download %s: %v", pair.Output, err)
 		}

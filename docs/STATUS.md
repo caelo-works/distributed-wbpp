@@ -56,7 +56,7 @@ Measured results (30 lights, 1 worker): `calib integration 1 local ∥ 2 cluster
 ## Architecture
 
 - **Go sidecar** (static binary, no runtime): LAN discovery (UDP multicast
-  beacon), HTTP + SHA-256 transfer, localhost control plane, **whole-job
+  beacon, signed), mutual-TLS + HMAC transfer, localhost control plane, **whole-job
   primitive** (lease of a free worker + per-worker serialization → concurrent jobs
   queued, no deadlock). Strict version handshake.
 - **PJSR ↔ sidecar bridge** (`SidecarBridge.js`): launches the sidecar via `ExternalProcess`,

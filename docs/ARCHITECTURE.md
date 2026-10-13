@@ -32,7 +32,7 @@ Determinism is guaranteed by a **strict version handshake**: identical PixInsigh
                  │    • shard/lease + push + run + collect       │
                  └───────────────│────────────────────────────┘
                                  │ LAN: discovery (UDP multicast)
-                                 │      transfer (HTTP + SHA-256)
+                                 │      transfer (mutual TLS + HMAC)
                  ┌───────────────▼────────────────────────────┐
                  │ CLIENT PC: sidecar --mode worker + PI worker │
                  │   • advertises on the LAN                    │
@@ -70,9 +70,11 @@ then batches the flat integrations.
 - `protocol.go` — wire types, constants (multicast group, magic, TTL, handshake).
 - `discovery.go` — UDP multicast **beacon** advertise/browse + a TTL `Registry`
   (custom beacon for a zero-dependency static binary; swappable to DNS-SD).
-- `transport.go` — HTTP: `/health` (handshake), `/upload`, `/download`, `/lan/work`;
-  every transfer carries a **SHA-256** and is verified. Master files are cached by
-  checksum (uploaded once, reused across groups).
+- `transport.go` — HTTPS (mutual TLS): `/health` (handshake), `/have`, `/upload`,
+  `/download`, `/lan/work`; every request and response is HMAC-signed, every transfer
+  carries a SHA-256 and is verified. Master files are cached by checksum (uploaded
+  once, reused across groups). `/lan/work` validates the manifest (op, process id,
+  plain file names) before parking it.
 - `pullexecutor.go` — `PullExecutor`: `/lan/work` parks a shard; the PixInsight
   worker pulls it (`GET /v1/work`), runs it, reports (`POST /v1/work/result`).
 - `distribute.go` — `distributeJob()`: handshake → shard → push shared+shard →
@@ -88,15 +90,18 @@ then batches the flat integrations.
     and inserts one hook, `installShim(engine, bridge)`, between the include and the
     run. The user sees the **normal WBPP dialog**, plus a live cluster dashboard.
   - **Client** — runs `lib/WorkerRuntime.js`.
-- `lib/WorkerRuntime.js` — the client pull loop (Timer): rebuild any serialized
-  process, rewrite server paths → local uploaded copies, run it, report outputs.
+- `lib/WorkerRuntime.js` — the client pull loop (Timer): rebuild the job's process
+  from its data description (allowlist, op → process id), rewrite server paths → local
+  uploaded copies, run it, report outputs.
   Modes: process (calib/SA/LN), `measurements` (SubframeSelector → `.ssm.json`),
   `integration` (ImageIntegration → save the integration view → server finalizes).
 - `lib/SidecarBridge.js` — launch the sidecar + drive its control API over files;
   `distributeAsync`/`distributeWait` for non-blocking cluster jobs.
 - `lib/WBPPShim.js` — the monkey-patch (both models above) + adaptive split + the
   Execution Monitor tagging.
-- `lib/ProcessSerializer.js` — `toSource`/`eval` round-trip of a process.
+- `lib/ProcessSerializer.js` — `{ id, params }` data round-trip of a process: names
+  from `toSource`, values from the live instance; rebuilt with `new` from a fixed
+  allowlist, known parameters and types only. No `eval`.
 
 ## The WBPP hook (WBPP 2.9.1)
 Operations are `BPPOperationBlock(name, group, trackable)` with a stable `this.name`
@@ -116,6 +121,14 @@ queue's `operations[]` array is used for **look-ahead** batching (skipping the u
 - Version mismatch at handshake → job refused (unless `--force`).
 
 ## Security (LAN)
-- Shared **cluster token** filters foreign beacons and gates participation.
-- Control API bound to **127.0.0.1** only.
-- All transfers integrity-checked (SHA-256). Optional LAN TLS is a later add.
+See `SECURITY.md` for the threat model.
+- Per-cluster **key** (160 bits, `wbpp-sidecar keygen`), stored in the script Settings,
+  handed to the sidecar through a one-shot file (`--secret-file`, deleted on read).
+- Sub-keys derived by HMAC: request/response signing, beacon signing, and the seed of
+  an ed25519 cluster CA. Each sidecar mints an ephemeral leaf from that CA; LAN
+  connections are TLS 1.3 with `RequireAndVerifyClientCert`.
+- Beacons are signed and must come from an announced address; older-protocol and
+  foreign-key beacons are reported in `/v1/nodes` (`incompatible`).
+- Worker listens on private LAN IPv4s + loopback only; body sizes capped.
+- Control APIs bound to **127.0.0.1**, with an `X-WBPP-Control` header and `Host` check.
+- Jobs carry process data, never code (see `ProcessSerializer.js`).

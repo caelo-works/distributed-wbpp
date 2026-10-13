@@ -27,7 +27,6 @@
 
 // defined BEFORE the includes: a #define only substitutes text that FOLLOWS it, and
 // lib/WorkerRuntime.js (included below) uses DWBPP_BUILD. Build stamp injected at deploy.
-#define CLUSTER_TOKEN "distributed-wbpp"
 #define DWBPP_BUILD   "__BUILD__"
 
 // the installed WBPP engine + GUI (server role runs it; client role loads it too,
@@ -83,83 +82,151 @@ function scriptDir()
    return File.extractDrive( #__FILE__ ) + File.extractDirectory( #__FILE__ );
 }
 
-// One level up, computed WITHOUT ".." (PJSR File.exists doesn't normalize it).
-function scriptParentDir()
+// Per-user folder for everything this script writes at run time (logs, client
+// cache, the one-shot key file). Nothing is ever written under the PixInsight
+// installation.
+function dwbppUserDir()
 {
-   var d = scriptDir();
-   while ( d.length > 1 && ( d.charAt( d.length - 1 ) == '/' || d.charAt( d.length - 1 ) == '\\' ) )
-      d = d.substring( 0, d.length - 1 );
-   var i = Math.max( d.lastIndexOf( '/' ), d.lastIndexOf( '\\' ) );
-   return ( i > 0 ) ? d.substring( 0, i ) : d;
+   return File.homeDirectory + "/CaeloWorks/DistributedWBPP";
+}
+function dwbppLogDir()   { return dwbppUserDir() + "/logs"; }
+function dwbppCacheDir() { return dwbppUserDir() + "/client-cache"; }
+
+// Delete the files of the client cache (frames, masters and outputs received
+// during a session). Only ever touches dwbppCacheDir(), never recurses.
+function dwbppClearCache()
+{
+   var dir = dwbppCacheDir();
+   if ( !File.directoryExists( dir ) )
+      return 0;
+   var n = 0, f = new FileFind;
+   if ( f.begin( dir + "/*" ) )
+      do
+      {
+         if ( f.isDirectory || f.name == "." || f.name == ".." )
+            continue;
+         try { File.remove( dir + "/" + f.name ); ++n; } catch ( e ) {}
+      }
+      while ( f.next() );
+   return n;
 }
 
-// The sidecar binary matching this machine's OS + CPU architecture, as shipped
-// in bin/ (wbpp-sidecar-<os>-<arch>[.exe]). PJSR has no CPU-arch API, so on Unix
-// we ask the OS via `uname -m` through the file channel (ExternalProcess.stdout
-// is unreliable here — see SidecarBridge).
-function machineArch()
-{
-   var plat = String( CoreApplication.platform );
-   if ( /MSWIN|Windows/i.test( plat ) )
-      return "amd64";                       // only a windows-amd64 build is shipped
-   var arch = "amd64";
-   try
-   {
-      var tmp = File.systemTempDirectory + "/wbpp-arch.txt";
-      var U = new ExternalProcess;
-      U.start( "/bin/sh", [ "-c", "uname -m > '" + tmp + "'" ] );
-      U.waitForFinished();
-      var m = File.exists( tmp ) ? File.readTextFile( tmp ) : "";
-      if ( /arm64|aarch64/i.test( m ) )
-         arch = "arm64";
-   }
-   catch ( e ) {}
-   return arch;
-}
+function dwbppIsWindows() { return /MSWIN|Windows/i.test( String( CoreApplication.platform ) ); }
+function dwbppIsMac()     { return /MAC|macOS|OSX/i.test( String( CoreApplication.platform ) ); }
 
-function sidecarBinaryName()
-{
-   var plat = String( CoreApplication.platform );
-   var isWin = /MSWIN|Windows/i.test( plat );
-   var os = isWin ? "windows" : ( /MAC|macOS|OSX/i.test( plat ) ? "darwin" : "linux" );
-   return "wbpp-sidecar-" + os + "-" + machineArch() + ( isWin ? ".exe" : "" );
-}
-
+// The shipped sidecar builds that can run here, most likely first. PJSR has no
+// CPU-architecture API, so on macOS and Linux both builds are candidates and the
+// first one that actually runs wins (see resolveSidecar).
 function sidecarCandidates()
 {
-   var here = scriptDir(), up = scriptParentDir(), name = sidecarBinaryName();
-   return [ here + "/bin/" + name,                     // installed package layout
-            here + "/" + name,                         // flat (dev)
-            up + "/wbpp-sidecar.exe",                   // legacy deploy (bench)
-            up + "/wbpp-sidecar-windows-amd64.exe",
-            here + "/wbpp-sidecar.exe" ];
+   var here = scriptDir();
+   var names;
+   if ( dwbppIsWindows() )
+      names = [ "wbpp-sidecar-windows-amd64.exe" ];  // only a windows-amd64 build is shipped
+   else if ( dwbppIsMac() )
+      names = [ "wbpp-sidecar-darwin-arm64", "wbpp-sidecar-darwin-amd64" ];
+   else
+      names = [ "wbpp-sidecar-linux-amd64", "wbpp-sidecar-linux-arm64" ];
+   var out = [];
+   for ( var i = 0; i < names.length; ++i )
+   {
+      out.push( here + "/bin/" + names[ i ] );  // installed package layout
+      out.push( here + "/" + names[ i ] );      // flat (dev)
+   }
+   return out;
+}
+
+// True if the binary starts and answers --version on this machine. A build for
+// another CPU architecture fails to start, which is how the right one is found.
+function sidecarRuns( path )
+{
+   try
+   {
+      var P = new ExternalProcess;
+      P.start( path, [ "--version" ] );
+      if ( P.waitForStarted && !P.waitForStarted( 5000 ) )
+         return false;
+      P.waitForFinished( 10000 );
+      return P.exitCode == 0;
+   }
+   catch ( e )
+   {
+      return false;
+   }
 }
 
 function resolveSidecar()
 {
-   var c = sidecarCandidates();
+   var c = sidecarCandidates(), present = [];
    for ( var i = 0; i < c.length; ++i )
       if ( File.exists( c[ i ] ) )
-      {
-         var p = c[ i ];
-         if ( !/\.exe$/i.test( p ) )
-         {
-            // macOS quarantines binaries extracted from a downloaded zip; strip the flag
-            // so Gatekeeper doesn't block the (unsigned) sidecar. UNTESTED on macOS — the
-            // proper fix is code-signing + notarization; this is a best-effort fallback.
-            if ( /MAC|macOS|OSX/i.test( String( CoreApplication.platform ) ) )
-               try { var Q = new ExternalProcess; Q.start( "/usr/bin/xattr", [ "-dr", "com.apple.quarantine", p ] ); Q.waitForFinished(); } catch ( e ) {}
-            // extracted zips can drop the exec bit on Unix — restore it before launch
-            try { var X = new ExternalProcess; X.start( "/bin/chmod", [ "+x", p ] ); X.waitForFinished(); } catch ( e ) {}
-         }
-         return p;
-      }
+         present.push( c[ i ] );
+   if ( dwbppIsWindows() )
+      return present.length > 0 ? present[ 0 ] : null;
+   for ( var j = 0; j < present.length; ++j )
+      if ( sidecarRuns( present[ j ] ) )
+         return present[ j ];
+   // Fallback for a copy that lost its exec bit (e.g. a manual unzip): the update
+   // package already ships these files as 0755, so this is normally never reached.
+   for ( var k = 0; k < present.length; ++k )
+   {
+      try { var X = new ExternalProcess; X.start( "/bin/chmod", [ "u+x", present[ k ] ] ); X.waitForFinished(); } catch ( e ) {}
+      if ( sidecarRuns( present[ k ] ) )
+         return present[ k ];
+   }
    return null;
 }
 
-// (pad2 / nowHMS come from lib/WorkerRuntime.js)
+// ---- cluster key ------------------------------------------------------------
 
-// ---- role picker ------------------------------------------------------------
+var DWBPP_KEY_SETTING = "DistributedWBPP/clusterKey";
+
+// Canonical form of a cluster key (32 base32 characters), or null if the text
+// is not a valid key. Spaces, dashes and case are ignored, so a key can be
+// pasted in any layout.
+function dwbppNormalizeKey( text )
+{
+   var k = String( text || "" ).toUpperCase().replace( /[^A-Z0-9]/g, "" );
+   return /^[A-Z2-7]{32}$/.test( k ) ? k : null;
+}
+
+// Display form: 8 groups of 4 characters.
+function dwbppFormatKey( key )
+{
+   return key.match( /.{1,4}/g ).join( "-" );
+}
+
+function dwbppLoadKey()
+{
+   var v = Settings.read( DWBPP_KEY_SETTING, DataType.UCString );
+   return ( Settings.lastReadOK && dwbppNormalizeKey( v ) ) ? dwbppNormalizeKey( v ) : "";
+}
+
+function dwbppSaveKey( key )
+{
+   Settings.write( DWBPP_KEY_SETTING, DataType.UCString, key );
+}
+
+// A fresh random key, drawn by the sidecar from the OS secure random source.
+function dwbppGenerateKey( sidecar )
+{
+   // written in the per-user folder, never in a shared temp dir, and deleted at once
+   if ( !File.directoryExists( dwbppUserDir() ) )
+      File.createDirectory( dwbppUserDir(), true );
+   var out = dwbppUserDir() + "/wbpp-keygen-" + ( new Date ).getTime() + ".txt";
+   var P = new ExternalProcess;
+   P.start( sidecar, [ "keygen", "--out-file", out ] );
+   if ( P.waitForStarted && !P.waitForStarted() )
+      throw new Error( "the sidecar did not start" );
+   P.waitForFinished( 10000 );
+   var key = File.exists( out ) ? dwbppNormalizeKey( File.readTextFile( out ) ) : null;
+   try { if ( File.exists( out ) ) File.remove( out ); } catch ( e ) {}
+   if ( key == null )
+      throw new Error( "could not generate a cluster key" );
+   return key;
+}
+
+// (pad2 / nowHMS come from lib/WorkerRuntime.js)
 
 // ---------------------------------------------------------------------------
 // Unlike FrameStyle / StdButton / StdIcon, TextAlign is NOT injected as a
@@ -174,19 +241,35 @@ if ( typeof TextAlign == "undefined" )
 // CaeloWorks dialog header (same family look as the other CaeloWorks scripts):
 // 44px emblem + bold title + a clickable "by CaeloWorks" + an italic tagline.
 
-// Open an URL/file with the OS default handler.
+var DWBPP_PRODUCT_URL = "https://pixinsight-scripts.caelo.works/en/scripts/distributed-wbpp";
+
+// Open the product page in the default browser. Only reached from a click on the
+// "by CaeloWorks" header link. The OS URL handler is started directly, never
+// through a shell: explorer.exe on Windows, open on macOS, xdg-open on Linux.
+// Anything but an https URL is refused.
 function dwbppOpenInBrowser( url )
 {
-   var plat = String( CoreApplication.platform );
-   var P = new ExternalProcess;
-   if ( /win|mswindows/i.test( plat ) )
-      P.start( "cmd", [ "/c", "start", "", url ] );
-   else if ( /mac|osx/i.test( plat ) )
-      P.start( "/usr/bin/open", [ url ] );
-   else
-      P.start( "xdg-open", [ url ] );
-   if ( P.waitForStarted )
-      P.waitForStarted();
+   if ( !/^https:\/\/\S+$/.test( url ) )
+   {
+      console.warningln( "Refusing to open a non-https URL: " + url );
+      return;
+   }
+   try
+   {
+      var P = new ExternalProcess;
+      if ( dwbppIsWindows() )
+         P.start( "explorer.exe", [ url ] );
+      else if ( dwbppIsMac() )
+         P.start( "/usr/bin/open", [ url ] );
+      else
+         P.start( "xdg-open", [ url ] );
+      if ( P.waitForStarted )
+         P.waitForStarted();
+   }
+   catch ( e )
+   {
+      console.warningln( "Could not open " + url );
+   }
 }
 
 // The script emblem as a fixed-size control, or null if the SVG can't be found
@@ -240,8 +323,8 @@ function dwbppMakeHeader( dlg, tagline )
    by.useRichText = true;
    by.text = "by <span style=\"color:#5a8fd0; text-decoration:underline;\">CaeloWorks</span>";
    by.textAlignment = TextAlign.Left | TextAlign.VertCenter;
-   by.toolTip = "https://pixinsight-scripts.caelo.works/ — build " + DWBPP_BUILD;
-   by.onMousePress = function() { dwbppOpenInBrowser( "https://pixinsight-scripts.caelo.works/" ); };
+   by.toolTip = "Opens " + DWBPP_PRODUCT_URL + " in your default browser (build " + DWBPP_BUILD + ")";
+   by.onMousePress = function() { dwbppOpenInBrowser( DWBPP_PRODUCT_URL ); };
    try { by.cursor = new Cursor( ( typeof StdCursor != "undefined" && StdCursor.PointingHand ) ? StdCursor.PointingHand : 13 ); } catch ( e ) {}
 
    var col = new VerticalSizer;
@@ -269,13 +352,97 @@ function dwbppMakeHeader( dlg, tagline )
    return head;
 }
 
-class RoleDialog extends Dialog
+// ---- help: network, programs and files --------------------------------------
+
+// The same facts as the README section "Network, programs and files".
+function dwbppHelpHtml()
+{
+   return "" +
+      "<p><b>Network.</b> Everything stays on your local network; the script never connects to the Internet.</p>" +
+      "<ul>" +
+      "<li>Discovery: each client announces itself every 2 s by UDP multicast to <tt>239.255.42.99:42099</tt> " +
+      "(machine name, operating system, PixInsight and WBPP versions, LAN address and port), signed with the cluster key.</li>" +
+      "<li>Each client listens on one TCP port, chosen by the system, on its private LAN addresses only. " +
+      "The server connects to it to send frames and jobs and to fetch the results.</li>" +
+      "<li>PixInsight talks to its own sidecar on <tt>127.0.0.1:48099</tt>, which is reachable from this computer only.</li>" +
+      "<li>What travels between your PCs: light and calibration frames, masters, intermediate files " +
+      "(registration, drizzle and normalization data, measurements) and process parameters, including the file paths of the server.</li>" +
+      "<li>Protection: a random 160-bit cluster key, generated on the server and pasted once on each client. " +
+      "All transfers use TLS 1.3 with both ends authenticated by that key, every request and answer is signed, " +
+      "and clients only run a fixed list of WBPP processes (calibration, registration, local normalization, " +
+      "integration, drizzle integration, measurements) from parameter values, never code. " +
+      "Nodes with another key, or an older version of the script, are ignored.</li>" +
+      "<li>Firewall: the first time, Windows or macOS asks whether <tt>wbpp-sidecar</tt> may accept incoming " +
+      "connections. Allow it on private networks on every PC of the cluster.</li>" +
+      "</ul>" +
+      "<p><b>Programs started.</b></p>" +
+      "<ul>" +
+      "<li>The bundled sidecar, <tt>&lt;PixInsight&gt;/src/scripts/CaeloWorks/DistributedWBPP/bin/wbpp-sidecar-&lt;os&gt;-&lt;cpu&gt;</tt>: " +
+      "it runs in the background while the script is open, and briefly for each exchange with PixInsight. " +
+      "On macOS and Linux it is first started with <tt>--version</tt> to pick the build for your processor.</li>" +
+      "<li>Windows only: <tt>taskkill</tt>, at start, to end a sidecar left over by a previous session.</li>" +
+      "<li>macOS and Linux only, as a repair: <tt>chmod u+x</tt> on the sidecar if it lost its execute permission " +
+      "(a manual unzip). An installation from the update repository never needs it.</li>" +
+      "<li>Your web browser, through <tt>explorer.exe</tt>, <tt>open</tt> or <tt>xdg-open</tt>, only when you click " +
+      "<i>by CaeloWorks</i>, on " + DWBPP_PRODUCT_URL + ".</li>" +
+      "</ul>" +
+      "<p><b>Files.</b> Nothing is written inside the PixInsight installation.</p>" +
+      "<ul>" +
+      "<li>Logs: <tt>" + dwbppLogDir() + "</tt> (a few kB to a few MB per session; delete them at any time).</li>" +
+      "<li>Client cache: <tt>" + dwbppCacheDir() + "</tt>, the frames, masters and results received from the server. " +
+      "It can reach the size of the client's share of the data being processed. " +
+      "It is emptied when the client starts and when you click <i>Leave client mode</i>.</li>" +
+      "<li>Temporary files named <tt>wbpp-*</tt> in the system temporary folder: small exchange files, deleted after use, " +
+      "and on the server the results downloaded from the clients, deleted at the end of the session.</li>" +
+      "<li>The cluster key is kept in the PixInsight settings (<tt>" + DWBPP_KEY_SETTING + "</tt>).</li>" +
+      "</ul>" +
+      "<p><b>WBPP.</b> The server runs the WBPP installed with PixInsight and adapts it in memory only, for the " +
+      "duration of the session: no WBPP file is changed. If anything is unexpected (unknown WBPP version, " +
+      "no client found, a client error), the work runs locally, as in a normal WBPP run.</p>";
+}
+
+class HelpDialog extends Dialog
 {
 constructor()
 {
    super();
+   this.windowTitle = "Distributed WBPP: network, programs and files";
+
+   this.textLabel = new Label( this );
+   this.textLabel.useRichText = true;
+   this.textLabel.wordWrapping = true;
+   this.textLabel.setFixedWidth( 640 );
+   this.textLabel.text = dwbppHelpHtml();
+
+   this.closeButton = new PushButton( this );
+   this.closeButton.text = "Close";
+   this.closeButton.onClick = function() { this.dialog.ok(); };
+
+   this.buttons = new HorizontalSizer;
+   this.buttons.addStretch();
+   this.buttons.add( this.closeButton );
+
+   this.sizer = new VerticalSizer;
+   this.sizer.margin = 12;
+   this.sizer.spacing = 10;
+   this.sizer.add( this.textLabel );
+   this.sizer.add( this.buttons );
+   this.adjustToContents();
+   this.setFixedSize();
+}
+}
+
+// ---- role picker ------------------------------------------------------------
+
+class RoleDialog extends Dialog
+{
+constructor( sidecar )
+{
+   super();
    this.windowTitle = "Distributed WBPP  [build " + DWBPP_BUILD + "]";
    this.role = null;
+   this.key = null;
+   this.sidecar = sidecar;
 
    this.headerSizer = dwbppMakeHeader( this,
       "🖧  <i>Every PixInsight on your network, one WBPP run.</i>" );
@@ -289,13 +456,84 @@ constructor()
       "• <b>Server</b> — drives WBPP (native UI), distributes the work.<br>" +
       "• <b>Client</b> — helps the server: leave the window open.";
 
+   // cluster key: generated on the server, pasted once on each client
+   this.keyLabel = new Label( this );
+   this.keyLabel.text = "Cluster key:";
+   this.keyLabel.textAlignment = TextAlign.Left | TextAlign.VertCenter;
+
+   var saved = dwbppLoadKey();
+   this.keyEdit = new Edit( this );
+   this.keyEdit.text = saved ? dwbppFormatKey( saved ) : "";
+   this.keyEdit.setMinWidth( 330 );
+   this.keyEdit.toolTip = "<p>The key that lets your PCs work together, and only them.</p>" +
+      "<p>Server: a key is created the first time; give it to your clients.<br>" +
+      "Client: paste the key shown in the server window.</p>";
+
+   this.newKeyButton = new PushButton( this );
+   this.newKeyButton.text = "New key";
+   this.newKeyButton.toolTip = "Create a new random key. Every client will need it.";
+   this.newKeyButton.onClick = function()
+   {
+      var d = this.dialog;
+      if ( dwbppNormalizeKey( d.keyEdit.text ) != null &&
+           ( new MessageBox( "Replace the cluster key? Every client will need the new key.",
+              "Distributed WBPP", StdIcon.Question, StdButton.Yes, StdButton.No ) ).execute() != StdButton.Yes )
+         return;
+      try { d.keyEdit.text = dwbppFormatKey( dwbppGenerateKey( d.sidecar ) ); }
+      catch ( e ) { ( new MessageBox( e.message, "Distributed WBPP", StdIcon.Error, StdButton.Ok ) ).execute(); }
+   };
+
+   this.keyRow = new HorizontalSizer;
+   this.keyRow.spacing = 6;
+   this.keyRow.add( this.keyLabel );
+   this.keyRow.add( this.keyEdit, 100 );
+   this.keyRow.add( this.newKeyButton );
+
    this.serverButton = new PushButton( this );
    this.serverButton.text = " Server — drive WBPP ";
-   this.serverButton.onClick = function() { this.dialog.role = "server"; this.dialog.ok(); };
+   this.serverButton.onClick = function()
+   {
+      var d = this.dialog;
+      var key = dwbppNormalizeKey( d.keyEdit.text );
+      if ( key == null )
+      {
+         if ( d.keyEdit.text.replace( /\s/g, "" ).length > 0 )
+         {
+            ( new MessageBox( "This is not a valid cluster key. Clear the field to have a new key created, " +
+               "or click New key.", "Distributed WBPP", StdIcon.Error, StdButton.Ok ) ).execute();
+            return;
+         }
+         try { key = dwbppGenerateKey( d.sidecar ); }
+         catch ( e ) { ( new MessageBox( e.message, "Distributed WBPP", StdIcon.Error, StdButton.Ok ) ).execute(); return; }
+      }
+      dwbppSaveKey( key );
+      d.key = key;
+      d.role = "server";
+      d.ok();
+   };
 
    this.clientButton = new PushButton( this );
    this.clientButton.text = " Client — help ";
-   this.clientButton.onClick = function() { this.dialog.role = "client"; this.dialog.ok(); };
+   this.clientButton.onClick = function()
+   {
+      var d = this.dialog;
+      var key = dwbppNormalizeKey( d.keyEdit.text );
+      if ( key == null )
+      {
+         ( new MessageBox( "Paste the cluster key shown in the Distributed WBPP window of the server " +
+            "(32 letters and digits; dashes and spaces do not matter).",
+            "Distributed WBPP", StdIcon.Warning, StdButton.Ok ) ).execute();
+         return;
+      }
+      dwbppSaveKey( key );
+      d.key = key;
+      d.role = "client";
+      d.ok();
+   };
+
+   this.helpButton = new PushButton( this );
+   this.helpButton.text = "Network, programs and files…";
+   this.helpButton.onClick = function() { ( new HelpDialog ).execute(); };
 
    this.cancelButton = new PushButton( this );
    this.cancelButton.text = "Cancel";
@@ -306,6 +544,7 @@ constructor()
    this.buttons.add( this.serverButton );
    this.buttons.add( this.clientButton );
    this.buttons.addStretch();
+   this.buttons.add( this.helpButton );
    this.buttons.add( this.cancelButton );
 
    this.sizer = new VerticalSizer;
@@ -313,6 +552,7 @@ constructor()
    this.sizer.spacing = 12;
    this.sizer.add( this.headerSizer );
    this.sizer.add( this.intro );
+   this.sizer.add( this.keyRow );
    this.sizer.add( this.buttons );
    this.setFixedSize();
 }
@@ -322,7 +562,7 @@ constructor()
 
 class ServerDashboard extends Dialog
 {
-constructor()
+constructor( clusterKey )
 {
    super();
    this.windowTitle = "Distributed WBPP — Server  [build " + DWBPP_BUILD + "]";
@@ -337,6 +577,17 @@ constructor()
    this.header.margin = 6;
    this.header.useRichText = true;
    this.header.text = "<b>Server ready.</b> Distribution will show here during the WBPP run.";
+
+   this.keyLabel = new Label( this );
+   this.keyLabel.text = "Cluster key (paste it once on each client):";
+   this.keyLabel.textAlignment = TextAlign.Left | TextAlign.VertCenter;
+   this.keyEdit = new Edit( this );
+   this.keyEdit.readOnly = true;
+   this.keyEdit.text = dwbppFormatKey( clusterKey );
+   this.keyRow = new HorizontalSizer;
+   this.keyRow.spacing = 6;
+   this.keyRow.add( this.keyLabel );
+   this.keyRow.add( this.keyEdit, 100 );
 
    this.workers = new Label( this );
    this.workers.margin = 2;
@@ -370,12 +621,13 @@ constructor()
    this.sizer.spacing = 6;
    this.sizer.add( this.headerSizer );
    this.sizer.add( this.header );
+   this.sizer.add( this.keyRow );
    this.sizer.add( this.workers );
    this.sizer.add( this.log, 100 );
    this.sizer.add( this.buttons );
    this.setMinSize( 680, 500 );
 
-   this.logger = new FileLogger( scriptParentDir() + "/logs", "server",
+   this.logger = new FileLogger( dwbppLogDir(), "server",
       [ "Distributed-WBPP SERVER",
         "PixInsight " + piVersionString() + " / WBPP " + wbppVersionString(),
         "" ] );
@@ -407,9 +659,9 @@ constructor()
 }
 }
 
-function runServer( bridge )
+function runServer( bridge, clusterKey )
 {
-   var dashboard = new ServerDashboard;
+   var dashboard = new ServerDashboard( clusterKey );
    dashboard.show();
    processEvents();
 
@@ -420,6 +672,16 @@ function runServer( bridge )
       onLog: function( msg ) { dashboard.logLine( msg ); processEvents(); }
    } );
    dashboard.setWorkers( bridge.__workerList || [] );
+   // nodes the sidecar refused: tell the user what to do about each one
+   for ( var i = 0; i < bridge.incompatible.length; ++i )
+   {
+      var n = bridge.incompatible[ i ];
+      var why = String( n.reason || "" );
+      dashboard.logLine( "⚠ Ignored a client at " + n.addr + ": " + why +
+         ( /key/i.test( why ) ? ". Paste this server's cluster key on it." :
+           /older/i.test( why ) ? ". Update it to Distributed WBPP 1.9.0 or later." :
+           /newer/i.test( why ) ? ". Update this PC to the same Distributed WBPP version." : "." ) );
+   }
    if ( status.active )
       dashboard.logLine( "Cluster ACTIVE — " + status.workers + " client(s); heavy steps will be distributed." );
    else
@@ -427,7 +689,11 @@ function runServer( bridge )
 
    // run WBPP exactly as the stock entry does; the user configures + clicks GO.
    try { runNativeWBPP(); }
-   finally { dashboard.recap(); }
+   finally
+   {
+      dashboard.recap();
+      removeClusterTempDirs();
+   }
 }
 
 // ---- entry ------------------------------------------------------------------
@@ -438,30 +704,38 @@ function main()
    // on older PixInsight use plugin v1.0.0 (the update channel gates this too)
    CoreApplication.ensureMinimumVersion( 1, 9, 4 );
 
-   var picker = new RoleDialog;
-   if ( !picker.execute() || !picker.role )
-      return;
-
    var sidecar = resolveSidecar();
    if ( sidecar == null )
    {
-      ( new MessageBox( "Sidecar not found next to the script.\n\nPaths tried:\n  " +
+      ( new MessageBox( "No sidecar that runs on this computer was found next to the script.\n\nPaths tried:\n  " +
          sidecarCandidates().join( "\n  " ), "Distributed WBPP", StdIcon.Error, StdButton.Ok ) ).execute();
       return;
    }
 
+   var picker = new RoleDialog( sidecar );
+   if ( !picker.execute() || !picker.role || !picker.key )
+      return;
+
    var isServer = ( picker.role == "server" );
+   if ( !File.directoryExists( dwbppUserDir() ) )
+      File.createDirectory( dwbppUserDir(), true );
+   if ( !isServer )
+      dwbppClearCache();   // leftovers of a session that did not end cleanly
+
    var bridge = new SidecarBridge(
    {
       binaryPath:  sidecar,
       role:        isServer ? "server" : "worker",
-      token:       CLUSTER_TOKEN,
+      clusterKey:  picker.key,
+      keyDir:      dwbppUserDir(),
       piVersion:   piVersionString(),
       wbppVersion: wbppVersionString(),
-      logDir:      scriptParentDir() + "/logs",
-      dataDir:     isServer ? "" : ( File.systemTempDirectory + "/wbpp-cluster-worker" ),
+      logDir:      dwbppLogDir(),
+      dataDir:     isServer ? "" : dwbppCacheDir(),
       discoverSeconds: 3
    } );
+   if ( !File.directoryExists( dwbppLogDir() ) )
+      File.createDirectory( dwbppLogDir(), true );
 
    try { bridge.start(); }
    catch ( e )
@@ -477,8 +751,13 @@ function main()
       return;
    }
 
-   try { isServer ? runServer( bridge ) : runWorker( bridge ); }
-   finally { bridge.stop(); }
+   try { isServer ? runServer( bridge, picker.key ) : runWorker( bridge ); }
+   finally
+   {
+      bridge.stop();
+      if ( !isServer )
+         dwbppClearCache();
+   }
 }
 
 main();

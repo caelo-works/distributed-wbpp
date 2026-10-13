@@ -6,7 +6,52 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-13
+
+This release changes the network protocol: **every PC of the cluster must run 1.9.0**.
+A 1.9.0 server ignores 1.8.x clients and names them in its dashboard.
+
 ### Added
+- **Cluster key.** The server creates a random 160-bit key the first time it runs and
+  shows it in its dashboard; each client gets it pasted once in the role picker (it is
+  remembered in the PixInsight settings). Only PCs that share the key work together, so
+  two clusters on the same network stay apart. **New key** replaces it.
+- **Encrypted, authenticated transfers.** Every connection between PCs uses TLS 1.3, with
+  both ends authenticated by the cluster key, and every request and answer is signed.
+  Discovery announcements are signed too.
+- **"Network, programs and files"**: a new README section, also available from the role
+  picker, listing every network endpoint, every program the script starts and every
+  folder it writes to, with sizes and cleanup.
+- **Support knowledge base** ([`docs/support-kb.md`](docs/support-kb.md)) — the reference
+  read by the public support agent on the CaeloWorks Discord: facts card, installation,
+  the correct server/client sequence, what is and is not distributed, network and firewall,
+  version rules, the exact text of every message the plugin can show, known bugs and
+  limitations, symptom → cause → answer troubleshooting, the data-safety guarantees support
+  may promise, and when to escalate. Keeping it accurate — and moving a "known bug" entry
+  in the same PR that fixes the bug — is now part of the release rules (`CONTRIBUTING.md`).
+
+### Changed
+- **Process parameters travel as data.** A job now carries the WBPP process identifier and
+  its parameter values; a client rebuilds the process from a fixed list (StarAlignment,
+  ImageCalibration, LocalNormalization, ImageIntegration, DrizzleIntegration), with known
+  parameters and types only, and refuses any other job.
+- **Nothing is written inside the PixInsight installation any more.** Logs (script and
+  sidecar) move to `<home>/CaeloWorks/DistributedWBPP/logs/`, and the client cache to
+  `<home>/CaeloWorks/DistributedWBPP/client-cache/`.
+- **The client cache is emptied** when the client starts and when you leave client mode,
+  and the server deletes the results it downloaded at the end of the session. Small
+  exchange files are deleted right after use.
+- The sidecar build is picked by starting it (`--version`), not with a shell command, and
+  the execute bit is only restored as a repair when no build can start. The script no
+  longer touches the macOS quarantine flag (the README gives the command for users who
+  installed from the zip and want to clear it themselves).
+- Clients listen on their private LAN addresses only, and request sizes are capped.
+- The "by CaeloWorks" link opens the product page and starts the browser directly
+  (`explorer.exe` on Windows instead of `cmd /c start`).
+
+### Fixed
+- The README now states the real minimum version, **PixInsight 1.9.4**.
+- The client log says "in" instead of "en" for a completed job.
 - **Support knowledge base** ([`docs/support-kb.md`](docs/support-kb.md)) — the reference
   read by the public support agent on the CaeloWorks Discord: facts card, installation,
   the correct server/client sequence, what is and is not distributed, network and firewall,

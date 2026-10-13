@@ -163,13 +163,38 @@ function __captureViaContainer( engine, runNative, skipAdds )
    return { captured: captured, nativeErr: nativeErr };
 }
 
-// A fresh unique temp dir for a cluster download.
+// A fresh unique temp dir for a cluster download. Its content is consumed during
+// the run (masters are re-saved by WBPP), so every such dir is removed at the end
+// of the session by removeClusterTempDirs().
+var __wbppTempDirs = [];
 function __makeTempDir( tag )
 {
    var p = File.systemTempDirectory + "/wbpp-" + tag + "-" + ( new Date ).getTime();
    if ( !File.directoryExists( p ) )
       File.createDirectory( p, true );
+   __wbppTempDirs.push( p );
    return p;
+}
+
+function removeClusterTempDirs()
+{
+   while ( __wbppTempDirs.length > 0 )
+   {
+      var dir = __wbppTempDirs.pop();
+      try
+      {
+         var f = new FileFind;
+         if ( f.begin( dir + "/*" ) )
+            do
+            {
+               if ( !f.isDirectory )
+                  File.remove( dir + "/" + f.name );
+            }
+            while ( f.next() );
+         File.removeDirectory( dir );
+      }
+      catch ( e ) {}
+   }
 }
 
 // Per-operation descriptor. proc/step reference core/WBPP globals resolved at
@@ -476,7 +501,7 @@ function captureII( engine, operation, env, ri )
       }
    }
    catch ( e ) {}
-   return { source: serializeProcess( captured, "II" ), frames: frames,
+   return { source: serializeProcess( captured ), frames: frames,
             companions: companions, xdrzByBase: xdrzByBase };
 }
 
@@ -544,7 +569,7 @@ function dispatchIntegrationBatch( engine, bridge, batch, env, ri, label )
          var isLight = ( op.group.imageType == ImageType.Light );
          var outTmp = __makeTempDir( "integ-" + i );
          var h = bridge.distributeAsync( { inputs: cap.frames,
-            op: isLight ? "light_integration" : "integration", process_source: cap.source,
+            op: isLight ? "light_integration" : "integration", process: cap.source,
             shared_files: isLight ? cap.companions : [],
             out_dir: outTmp, postfix: "", out_ext: ".xisf", whole_job: true } );
          handles.push( { op: op, handle: h, cap: cap, isLight: isLight } );
@@ -812,7 +837,7 @@ function captureLNRefII( engine, operation, env, ri )
       if ( ln.length > 0 && File.exists( ln ) )
          companions.push( ln );
    }
-   return { source: serializeProcess( captured, "II" ), frames: frames, companions: companions };
+   return { source: serializeProcess( captured ), frames: frames, companions: companions };
 }
 
 // Write the worker's integration as the LN_Reference master (doIntegrate naming:
@@ -861,7 +886,7 @@ function dispatchLNRefBatch( engine, bridge, batch, env, ri )
          var cap = captureLNRefII( engine, op, env, ri );
          var outTmp = __makeTempDir( "lnref-" + i );
          var h = bridge.distributeAsync( { inputs: cap.frames, op: "light_integration",
-            process_source: cap.source, shared_files: cap.companions,
+            process: cap.source, shared_files: cap.companions,
             out_dir: outTmp, postfix: "", out_ext: ".xisf", whole_job: true } );
          handles.push( { op: op, handle: h, cap: cap } );
          nCluster++;
@@ -1047,7 +1072,7 @@ function captureDrizzle( engine, operation, env, ri )
             companions.push( lnPath );
       }
    }
-   return { source: serializeProcess( DI, "DI" ), xdrz: xdrz, companions: companions };
+   return { source: serializeProcess( DI ), xdrz: xdrz, companions: companions };
 }
 
 // Write the worker's drizzle bundle as the WBPP drizzle master and wire it.
@@ -1098,7 +1123,7 @@ function dispatchDrizzleBatch( engine, bridge, batch, env, ri )
          var cap = captureDrizzle( engine, op, env, ri );
          var outTmp = __makeTempDir( "drizzle-" + i );
          var h = bridge.distributeAsync( { inputs: cap.xdrz, op: "drizzle_integration",
-            process_source: cap.source, shared_files: cap.companions,
+            process: cap.source, shared_files: cap.companions,
             out_dir: outTmp, postfix: "", out_ext: ".xisf", whole_job: true } );
          handles.push( { op: op, handle: h } );
          nCluster++;
@@ -1348,7 +1373,7 @@ function captureAndDistribute( engine, operation, descriptor, bridge, originalRu
       }
    }
 
-   var source  = serializeProcess( P, "P" );
+   var source  = serializeProcess( P );
    // most ops expose "outputDirectory"; a descriptor may override the field name.
    var dirField = descriptor.dirField || "outputDirectory";
    var outDir  = P[ dirField ];
@@ -1391,7 +1416,7 @@ function captureAndDistribute( engine, operation, descriptor, bridge, originalRu
       handle = bridge.distributeAsync(
       {
          inputs: clientInputs, shared_files: sharedFiles, file_ref_fields: fileRefs,
-         op: descriptor.label, process_source: source, out_dir: outDir,
+         op: descriptor.label, process: source, out_dir: outDir,
          prefix: prefix, postfix: postfix, out_ext: ext, dir_field: dirField,
          targets_field: descriptor.targetsField, path_index: descriptor.pathIndex, drizzle: descriptor.drizzle
       } );

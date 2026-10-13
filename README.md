@@ -4,8 +4,8 @@
 
 ### Run PixInsight's Weighted Batch Preprocessing across every PC on your network
 
-[![Version](https://img.shields.io/badge/version-1.8.0-22d3ee?style=for-the-badge&labelColor=0f172a)](https://github.com/caelo-works/distributed-wbpp/releases/latest)
-[![PixInsight](https://img.shields.io/badge/PixInsight-%E2%89%A5%201.9.0-67e8f9?style=for-the-badge&labelColor=0f172a)](https://pixinsight.com/)
+[![Version](https://img.shields.io/badge/version-1.9.0-22d3ee?style=for-the-badge&labelColor=0f172a)](https://github.com/caelo-works/distributed-wbpp/releases/latest)
+[![PixInsight](https://img.shields.io/badge/PixInsight-%E2%89%A5%201.9.4-67e8f9?style=for-the-badge&labelColor=0f172a)](https://pixinsight.com/)
 [![Status](https://img.shields.io/badge/status-beta-fbbf24?style=for-the-badge&labelColor=0f172a)](https://pixinsight-scripts.caelo.works/en/scripts/distributed-wbpp)
 [![License](https://img.shields.io/badge/license-GPL--3.0-94a3b8?style=for-the-badge&labelColor=0f172a)](LICENSE)
 [![Website](https://img.shields.io/badge/%E2%86%92%20see%20all%20scripts-pixinsight--scripts.caelo.works-0f172a?style=for-the-badge&labelColor=22d3ee)](https://pixinsight-scripts.caelo.works/en)
@@ -48,7 +48,7 @@ run — never a silently wrong result.
 | | |
 |---|---|
 | 🖥️ **Native WBPP, unchanged** | You use the real WBPP dialog with all its options — distribution is grafted underneath. The only extra gesture: launch the script in *Client* mode on the other PCs. |
-| 🌐 **Zero-config LAN clustering** | Helpers are discovered automatically (UDP multicast); frames and process parameters travel over HTTP with SHA-256 integrity. No shared drive, no manual IP addresses. |
+| 🌐 **Zero-config LAN clustering** | Helpers are discovered automatically (UDP multicast); frames and process parameters travel encrypted (TLS), between PCs that share your cluster key. No shared drive, no manual IP addresses. |
 | ⚡ **The heavy steps, in parallel** | Calibration, registration, local normalization, measurements and the calibration-master integrations are sharded across the cluster; the server works its own share at the same time. |
 | ⚖️ **Adaptive load balancing** | The server ∥ cluster split is measured and self-tunes every group, weighted by each worker's real throughput — a slower machine simply gets fewer frames, automatically. |
 | 🛟 **Safe local fallback** | A strict version handshake (identical PixInsight + WBPP on every node) guards determinism; on any mismatch, missing helper or error, it runs a normal local WBPP. |
@@ -64,8 +64,8 @@ In PixInsight, open **Resources → Updates → Manage Repositories** and add
 Do this on **every PC** of the cluster. Updates are then delivered
 automatically through the same channel.
 
-> The repository is not CPD-signed yet, so PixInsight shows an
-> "unsigned repository" warning; signing is underway.
+The repository is signed with the Caelo Works Certified PixInsight Developer identity, so
+PixInsight verifies where the updates come from and that they have not been altered.
 
 ### Manual install
 
@@ -76,13 +76,17 @@ Download `DistributedWBPP-<version>.zip` from the
 Restart PixInsight — the script appears under **Script → CaeloWorks → Distributed
 WBPP**. Install it on **every PC** you want in the cluster.
 
-> **Requires PixInsight 1.9.0 or newer**, the **same version on every node.**
+> **Requires PixInsight 1.9.4 or newer**, the **same version on every node**, and the
+> **same version of Distributed WBPP on every node** (a 1.9.x node and a 1.8.x node cannot
+> work together: the server lists the older ones and ignores them).
 >
 > **Platform support:** validated end-to-end on **Windows**, **macOS** (Sonoma, Intel) and
 > **Linux** (Ubuntu 24.04), including **mixed-OS clusters** (Windows server driving Linux
-> and macOS workers). The companion is not yet code-signed; on macOS that is harmless in
-> practice — PixInsight spawns it directly, a path Gatekeeper does not block — and the
-> plugin defensively strips the quarantine flag anyway.
+> and macOS workers). The companion is not code-signed by Apple. On macOS that is harmless
+> in practice: PixInsight starts it directly, a path Gatekeeper does not block, even when
+> the files of a downloaded zip carry the quarantine flag. The script never touches that
+> flag. If you installed manually from the zip and prefer to clear it, run this yourself:
+> `xattr -dr com.apple.quarantine "/Applications/PixInsight/src/scripts/CaeloWorks/DistributedWBPP/bin"`.
 >
 > **Mixed-OS note:** results are **bit-identical** when all nodes run the same OS. Across
 > OSes they are **numerically equivalent but not bit-identical**: PixInsight's math libraries
@@ -93,13 +97,15 @@ WBPP**. Install it on **every PC** you want in the cluster.
 
 ## Getting started
 
-1. On each **helper** PC, run **Script → CaeloWorks → Distributed WBPP** and pick **Client** — leave the window open; it discovers the server and processes the shards it's handed.
-2. On the machine you **drive from**, run it and pick **Server** — the **native WBPP dialog** opens.
-3. Add your frames and configure everything as usual, then click **Run**. A dashboard lists the connected clients and the live **server ∥ cluster** split; WBPP's own Execution Monitor tags each distributed row.
-4. When helpers are present the heavy steps are distributed automatically — including the final per-filter light integrations; autocrop and the astrometric solution run locally on the server.
+1. On the machine you **drive from**, run **Script → CaeloWorks → Distributed WBPP** and pick **Server**. The first time, a **cluster key** is created (32 letters and digits); the server window shows it. The **native WBPP dialog** opens.
+2. On each **helper** PC, run the script, paste the server's **cluster key** in the role picker (once: it is remembered), and pick **Client**. Leave the window open; it processes the shards the server hands it.
+3. Back on the server, add your frames and configure everything as usual, then click **Run**. A dashboard lists the connected clients and the live **server ∥ cluster** split; WBPP's own Execution Monitor tags each distributed row.
+4. When helpers are present the heavy steps are distributed automatically, including the final per-filter light integrations; autocrop and the astrometric solution run locally on the server.
 
-Nothing changes in your usual WBPP habit — the single addition is starting the same
-script in **Client** mode on the other PCs.
+Apart from the key, pasted once per PC, nothing changes in your usual WBPP habit: the
+single addition is starting the same script in **Client** mode on the other PCs. Only PCs
+that share the key work together, so two clusters on the same network never mix. The
+**New key** button in the role picker replaces the key (every client then needs the new one).
 
 ## How it works
 
@@ -112,7 +118,7 @@ LAN work.
 ```
 Server PC: PixInsight + native WBPP + shim ──(localhost, files)──▶ sidecar (agent) ──┐
                                                                                      │ LAN: auto-discovery
-Client PC: PixInsight + worker script      ◀─(localhost, files)── sidecar (worker) ◀─┘  + frame transfer (SHA-256)
+Client PC: PixInsight + worker script      ◀─(localhost, files)── sidecar (worker) ◀─┘  + frame transfer (TLS, cluster key)
 ```
 
 Two complementary distribution models:
@@ -128,6 +134,80 @@ drizzle/local-normalization companions). Autocrop and the astrometric solution s
 dependency). Correctness is enforced by the version handshake
 and was validated **bit-identically** against a local run.
 
+## Network, programs and files
+
+Everything Distributed WBPP does outside PixInsight's own processing, stated in full.
+The script's role picker shows the same information (**Network, programs and files…**).
+
+### Network
+
+Everything stays on your local network. The script never connects to the Internet and
+sends nothing to CaeloWorks or anyone else.
+
+| What | Where | Why |
+|---|---|---|
+| Discovery announcements | UDP multicast `239.255.42.99`, port `42099`, local subnet only | Each client announces itself every 2 s: machine name, operating system, PixInsight and WBPP versions, its LAN addresses and port. Announcements are signed with the cluster key; the server ignores any other. |
+| Client port | TCP, one port per client, chosen by the system at start, on the client's private LAN addresses only (plus `127.0.0.1`) | The server connects to it to send frames, masters and jobs, and to fetch the results. |
+| Local control port | TCP `127.0.0.1:48099` | PixInsight talks to its own sidecar on the same computer. Not reachable from the network. |
+
+**What travels between your PCs:** light and calibration frames, master frames,
+intermediate files (registration and drizzle data, local normalization data, frame
+measurements), the parameters of the WBPP processes run on the clients (they include the
+file paths of the server), and the announcements listed above.
+
+**How it is protected:**
+
+- A **cluster key**: 160 random bits, created on the server from the system's secure random
+  source and pasted once on each client. It is stored in the PixInsight settings of each PC
+  and never sent over the network.
+- **TLS 1.3** on every connection between PCs, with both ends authenticated by the key. A PC
+  without the key cannot connect, read or alter what is transferred.
+- Every request and every answer is also **signed** with the key (time-stamped, never
+  accepted twice), and every file is checked against its signed SHA-256.
+- Clients run only a fixed list of WBPP processes (calibration, registration, local
+  normalization, image integration, drizzle integration, frame measurements), rebuilt from
+  **parameter values**: a client never runs code received from the network.
+- Announcements from PCs with another key, or from an older version of Distributed WBPP,
+  are ignored; the server window names them so you know which PC to fix.
+
+**Firewall.** The first time the sidecar starts on a PC, Windows or macOS asks whether
+`wbpp-sidecar` may accept incoming network connections. Allow it **on private networks**,
+on every PC of the cluster (server included: it receives the announcements).
+
+### Programs started by the script
+
+| Program | When | Why |
+|---|---|---|
+| The bundled sidecar, `<PixInsight>/src/scripts/CaeloWorks/DistributedWBPP/bin/wbpp-sidecar-<os>-<cpu>` (`windows-amd64.exe`, `darwin-arm64`, `darwin-amd64`, `linux-amd64`, `linux-arm64`) | In the background while the script is open; briefly for each exchange with PixInsight and to create a cluster key | Discovery and transfers on the LAN (PixInsight scripts cannot listen on the network). On macOS and Linux it is first started with `--version`, to pick the build that runs on your processor. Stopped when you close the script. |
+| `taskkill /F /IM wbpp-sidecar.exe` | Windows only, when the script starts | Ends a sidecar left over by a previous session that did not close cleanly. |
+| `/bin/chmod u+x` on the sidecar | macOS and Linux only, and only if no sidecar build can start because the file lost its execute permission (for example after a manual unzip) | Repair. An installation from the update repository never needs it. |
+| Your web browser, through `explorer.exe` (Windows), `open` (macOS) or `xdg-open` (Linux) | Only when you click **by CaeloWorks** in a window header | Opens the product page, <https://pixinsight-scripts.caelo.works/en/scripts/distributed-wbpp>. |
+
+No shell is used, and nothing else is ever started.
+
+### Files
+
+Nothing is written inside the PixInsight installation. `<home>` is your user folder
+(`C:/Users/<you>` on Windows, `/Users/<you>` on macOS, `/home/<you>` on Linux).
+
+| What | Where | Size and cleanup |
+|---|---|---|
+| Logs | `<home>/CaeloWorks/DistributedWBPP/logs/`: `server-*.log` and `client-*.log` (one per session), `sidecar-agent.log` and `sidecar-worker.log` (rewritten each session) | A few kB to a few MB per session. Never deleted automatically; delete them whenever you like. |
+| Client cache | `<home>/CaeloWorks/DistributedWBPP/client-cache/` (clients only) | The frames, masters and results the server sends during a session. It can reach the size of the client's share of the data being processed, so plan free space on that order. Emptied when the client starts and when you click **Leave client mode**. |
+| Exchange files | `wbpp-*` files in the system temporary folder | Small request and result files between PixInsight and the sidecar, deleted right after use. |
+| Downloaded results (server) | `wbpp-*` folders in the system temporary folder | Results fetched from the clients before WBPP takes them into its output folder. Deleted at the end of the session. |
+| Cluster key | PixInsight settings, key `DistributedWBPP/clusterKey` | Kept until you replace it with **New key**. While the sidecar starts, the key is handed to it through a short-lived file in `<home>/CaeloWorks/DistributedWBPP/`, which the sidecar deletes at once. |
+
+WBPP's own outputs go where WBPP puts them, exactly as in a normal run.
+
+### How the server uses WBPP
+
+The server runs the WBPP installed with your PixInsight. To distribute the work, it
+adapts the running WBPP engine **in memory only**, for the duration of the session: no
+WBPP file is modified, and nothing persists after you close the script. If anything is
+unexpected (a WBPP version the script does not know, no client found, a client error), the
+affected work runs locally, as in a normal WBPP run.
+
 ---
 
 <details>
@@ -137,7 +217,7 @@ and was validated **bit-identically** against a local run.
 
 | Path | What |
 |---|---|
-| `sidecar/` | Go companion: discovery (UDP multicast), transfer (HTTP + SHA-256), control plane, whole-job leasing |
+| `sidecar/` | Go companion: discovery (signed UDP multicast), transfer (mutual TLS, signed requests), control plane, whole-job leasing |
 | `pjsr/DistributedWBPP.js` | Single entry: pick **Server** (native WBPP + shim) or **Client** (worker) |
 | `pjsr/lib/` | `SidecarBridge` (PJSR↔sidecar), `WBPPShim` (the monkey-patch), `WorkerRuntime` (client loop), `ProcessSerializer`, `FileLogger` |
 | `pjsr/assets/DistributedWBPP.svg` | Menu icon (`#feature-icon`) |
@@ -177,25 +257,9 @@ release** (the hand-off point the site pulls from):
   SHA-1, so the site authenticates the package by the `sha1` in the JSON.
 - **`fileName` is relative** to the repository base URL (served from `…/update/<fileName>`).
   No absolute GitHub URLs enter the index.
-- **Two signatures, two owners.** The `<Signature developerId=…>` on the aggregated
-  `updates.xri` is the **site's** job (CPD identity from Pleiades Astrophoto). The optional
-  per-**script** code signature (`DistributedWBPP.xsgn`, alongside the `.js` in the zip) is
-  **this** repo's job — but it is **disabled by default** and stays off until CaeloWorks'
-  CPD public key is distributed by PixInsight, because an *unverifiable* signature can
-  hard-block users whereas "unsigned" is only a dismissable warning. To cut a signed
-  artifact once the CPD identity is live:
-
-  ```bash
-  XSSK_PATH=/path/to/CaeloWorks.xssk PI_EXE=/path/to/PixInsight \
-    scripts/build-update-package.sh <version>
-  ```
-
-  The key **password** is prompted at runtime (`read -s`) and handed to PixInsight only
-  through the signing process's transient environment — **never** written to a file, log,
-  script or the repo (and `*.xssk` is git-ignored). Only the entry script is signed
-  (`lib/*.js` are not). A `.xsgn` embeds a timestamp, so a **signed** zip is not
-  byte-reproducible — its `sha1` changes per signing, and the site regenerates the index
-  from the JSON `sha1` accordingly.
+- **Signature.** The release zip carries no per-script signature (`.xsgn`): the
+  `<Signature developerId=…>` of the aggregated `updates.xri`, applied by the site with the
+  Caelo Works CPD identity, covers the package through its `sha1`.
 - **Sidecar embedded, not downloaded.** All Go binaries (~7 MB each) ride inside the zip
   and `resolveSidecar()` picks `wbpp-sidecar-<os>-<arch>` at runtime. Because the package
   is a single `os="all"` archive extracted verbatim, this costs each user ~28 MB of
