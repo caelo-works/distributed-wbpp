@@ -89,10 +89,12 @@ func distributeJob(ctx context.Context, sec *ClusterSecurity, self Capabilities,
 	// A worker that cannot be reached (down, TLS refused, wrong key) is skipped, so
 	// one bad peer never sinks the job while others are healthy.
 	reachable := workers[:0:0]
+	var lastErr error
 	for i := range workers {
 		caps, err := sec.FetchCapabilities(ctx, workers[i].Addr)
 		if err != nil {
 			lg("skipping worker %s: handshake failed: %v", workers[i].Addr, err)
+			lastErr = fmt.Errorf("%s: %w", workers[i].Addr, err)
 			continue
 		}
 		if m := versionMismatch(self, caps); m != "" && !job.Force {
@@ -101,7 +103,7 @@ func distributeJob(ctx context.Context, sec *ClusterSecurity, self Capabilities,
 		reachable = append(reachable, workers[i])
 	}
 	if len(reachable) == 0 {
-		return rep, fmt.Errorf("no reachable worker (handshake failed with all %d)", len(workers))
+		return rep, fmt.Errorf("no reachable worker (handshake failed with all %d; last: %v)", len(workers), lastErr)
 	}
 	workers = reachable
 	rep.Workers = len(workers)

@@ -679,7 +679,8 @@ function runServer( bridge, clusterKey )
       var why = String( n.reason || "" );
       dashboard.logLine( "⚠ Ignored a client at " + n.addr + ": " + why +
          ( /key/i.test( why ) ? ". Paste this server's cluster key on it." :
-           /older|protocol/i.test( why ) ? ". Update it to Distributed WBPP 1.9.0 or later." : "." ) );
+           /older/i.test( why ) ? ". Update it to Distributed WBPP 1.9.0 or later." :
+           /newer/i.test( why ) ? ". Update this PC to the same Distributed WBPP version." : "." ) );
    }
    if ( status.active )
       dashboard.logLine( "Cluster ACTIVE — " + status.workers + " client(s); heavy steps will be distributed." );
