@@ -11,6 +11,10 @@ All notable changes to this project are documented here. The format is based on
 This release changes the network protocol: **every PC of the cluster must run 1.9.0**.
 A 1.9.0 server ignores 1.8.x clients and names them in its dashboard.
 
+### Security
+- Fixes [GHSA-r9w7-3wf4-hhr2](https://github.com/caelo-works/distributed-wbpp/security/advisories/GHSA-r9w7-3wf4-hhr2)
+  (versions up to 1.8.0). Update every PC of the cluster.
+
 ### Added
 - **Cluster key.** The server creates a random 160-bit key the first time it runs and
   shows it in its dashboard; each client gets it pasted once in the role picker (it is
