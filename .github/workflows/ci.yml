@@ -32,6 +32,19 @@ jobs:
             echo "run: gofmt -w sidecar"; exit 1
           fi
 
+  pjsr:
+    name: PJSR checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Network, programs and files surface
+        run: bash scripts/check-pjsr-surface.sh
+      - name: Process serializer and job checks
+        run: node tests/serializer.test.js
+
   # NOTE: golangci-lint is intentionally omitted for now — it does not yet run on the
   # go.mod toolchain (Go 1.26). `go vet` + `gofmt` (above) are the lint baseline; re-add a
   # golangci-lint job once it supports the toolchain version.
