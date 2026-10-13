@@ -36,11 +36,12 @@ Support is declared in one place — `WBPP_SHIM_COMPAT` in
 [`pjsr/lib/WBPPShim.js`](../pjsr/lib/WBPPShim.js):
 
 ```js
-var WBPP_SHIM_COMPAT = { "3.0.1": true };
+var WBPP_SHIM_COMPAT = { "3.0.1": true, "3.1.0": true };
 ```
 
 | PixInsight | WBPP | Plugin | Status |
 |---|---|---|---|
+| 1.9.5 | 3.1.0 | ≥ 1.9.1 | Verified: full SHO run with drizzle 2x on a 2-PC Windows cluster (calibration, measurements, registration, local normalization, LN references, calib-master, light and drizzle integrations), 21/21 masters bit-identical vs a local-only run, clean WBPP logs. Plugin 1.9.0 and older load but run local-only. |
 | 1.9.4 | 3.0.1 | ≥ 1.1.0 | Verified — full SHO run distributed (calibration, registration, local normalization, measurements, calib-master integrations), outputs pixel-identical vs a local-only run. Plugin 1.0.1 loads but runs local-only. |
 | 1.9.3 | 2.9.1 | 1.0.0 | Verified — full SHO run, distributed masters validated bit-identically vs local. Plugin ≥ 1.0.1 does **not** load on this generation (WBPP 3.x include layout); stay on v1.0.0. |
 
@@ -59,7 +60,7 @@ enforces this with a version handshake and refuses to distribute on a mismatch.
 |---|---|---|
 | Windows | `wbpp-sidecar-windows-amd64.exe` | Verified — all E2E validation runs (server and worker roles). |
 | Linux | `wbpp-sidecar-linux-amd64` | Verified (Ubuntu 24.04, PI 1.9.4 / WBPP 3.0.1) — full E2E run as **worker in a mixed cluster** (Windows server): every distributed op collected, WBPP logs clean, worker 0 errors. |
-| macOS | `wbpp-sidecar-darwin-*` | Verified (Sonoma 14.8 Intel, PI 1.9.4 / WBPP 3.0.1) — full E2E run as **worker in a mixed cluster** (Windows server): every distributed op collected, logs clean, worker 0 errors. Binary unsigned: Gatekeeper does not block direct spawns (verified with a quarantined binary), and the plugin strips the quarantine flag defensively. |
+| macOS | `wbpp-sidecar-darwin-*` | Verified (Sonoma 14.8 Intel, PI 1.9.4 / WBPP 3.0.1) — full E2E run as **worker in a mixed cluster** (Windows server): every distributed op collected, logs clean, worker 0 errors. Binary not signed by Apple: Gatekeeper does not block direct spawns (verified with a quarantined binary). From 1.9.0 the plugin no longer touches the quarantine flag. |
 
 **Mixed-OS clusters are supported with a documented caveat:** outputs are bit-identical
 when every node runs the same OS, and *numerically equivalent* across OSes. PixInsight's

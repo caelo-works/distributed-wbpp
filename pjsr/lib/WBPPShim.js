@@ -42,7 +42,7 @@
 
 // WBPP versions whose operation names + process fields we've verified.
 // (2.9.x is served by plugin v1.0.0 — this shim targets the 3.0 engine layout.)
-var WBPP_SHIM_COMPAT = { "3.0.1": true };
+var WBPP_SHIM_COMPAT = { "3.0.1": true, "3.1.0": true };
 
 // Self-contained WBPP version read (also defined by the entry; duplicate function
 // declarations are legal and identical). >= 3.0: BPP.Version; 2.9.x: #define.
