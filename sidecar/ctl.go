@@ -86,6 +86,7 @@ func runCtl(args []string) {
 
 func ctlGet(ctx context.Context, url string) ([]byte, int) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req.Header.Set(headerControl, "1")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ctl: GET failed:", err)
@@ -99,6 +100,7 @@ func ctlGet(ctx context.Context, url string) ([]byte, int) {
 func ctlPost(ctx context.Context, url string, payload []byte) ([]byte, int) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerControl, "1")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ctl: POST failed:", err)
@@ -124,7 +126,7 @@ func writeOut(path string, body []byte) {
 // distributeFromFile is the server one-shot path: read a DistributeJob from a
 // file, discover workers, run it, and write the JobReport to out-file. Used by
 // the PJSR WBPPShim so it never has to speak HTTP.
-func distributeFromFile(ctx context.Context, self Capabilities, reg *Registry, jobFile, outFile string, discoverTO time.Duration) {
+func distributeFromFile(ctx context.Context, sec *ClusterSecurity, self Capabilities, reg *Registry, jobFile, outFile string, discoverTO time.Duration) {
 	raw, err := os.ReadFile(jobFile)
 	if err != nil {
 		fatalJSON(outFile, "read job-file: "+err.Error())
@@ -137,7 +139,7 @@ func distributeFromFile(ctx context.Context, self Capabilities, reg *Registry, j
 	if len(workers) == 0 {
 		fatalJSON(outFile, "no workers discovered")
 	}
-	rep, err := distributeJob(ctx, self, workers, job, nil)
+	rep, err := distributeJob(ctx, sec, self, workers, job, nil)
 	if err != nil {
 		// still emit the partial report alongside the error
 		out := map[string]any{"error": err.Error(), "report": rep}
