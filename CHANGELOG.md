@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-10-13
+
+### Added
+- **PixInsight 1.9.5 (WBPP 3.1.0) support.** Distribution was inactive on PixInsight 1.9.5
+  because WBPP 3.1.0 was not in the compatibility table (the run fell back to a local WBPP).
+  Validated with a full SHO run with drizzle on a 2-PC cluster: 21/21 masters bit-identical
+  to a local-only run, clean WBPP logs.
+
 ## [1.9.0] - 2026-10-13
 
 This release changes the network protocol: **every PC of the cluster must run 1.9.0**.

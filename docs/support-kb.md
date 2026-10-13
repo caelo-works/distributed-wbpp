@@ -18,7 +18,7 @@ Four rules when you use it:
   back to a normal local WBPP. When a user is scared about their data, that is the line to
   hold, and it is true.
 
-Applies to **plugin 1.9.0**. To check the user's version: the **title bar of the first
+Applies to **plugin 1.9.1**. To check the user's version: the **title bar of the first
 window** ("Distributed WBPP  [build …]") shows the build, and the installed version is
 listed in **Resources → Updates**.
 
@@ -29,8 +29,8 @@ listed in **Resources → Updates**.
 | | |
 |---|---|
 | What it is | A PixInsight script that runs the **native WBPP** across several PixInsight machines on the same local network |
-| Version | 1.9.0 · GPL-3.0 · free and open source |
-| Requires | **PixInsight 1.9.4 or newer**, with **WBPP 3.0.1** — the same versions on **every** machine |
+| Version | 1.9.1 · GPL-3.0 · free and open source |
+| Requires | **PixInsight 1.9.4 or newer**, with **WBPP 3.0.1** (PixInsight 1.9.4) or **WBPP 3.1.0** (PixInsight 1.9.5). The same versions on **every** machine. |
 | Platforms | Windows, macOS, Linux — including a mix of them in the same cluster |
 | Where it lives | **Script → CaeloWorks → Distributed WBPP** |
 | Install it on | **Every** machine of the cluster, server and helpers alike |
@@ -294,7 +294,10 @@ silently wrong master is worse than no speedup.
 
 ### 6.2 What is supported
 
-- **PixInsight 1.9.4 + WBPP 3.0.1** → use plugin **1.1.0 or newer** (current: 1.9.0).
+- **PixInsight 1.9.5 + WBPP 3.1.0** → use plugin **1.9.1 or newer** (current: 1.9.1).
+  Verified: full run distributed, outputs pixel-identical to a local-only run. With plugin
+  1.9.0 or older, PixInsight 1.9.5 runs a normal local WBPP (no distribution).
+- **PixInsight 1.9.4 + WBPP 3.0.1** → use plugin **1.1.0 or newer** (current: 1.9.1).
   Verified: full run distributed, outputs pixel-identical to a local-only run.
 - **PixInsight 1.9.3 + WBPP 2.9.1** → use plugin **1.0.0 only**. Plugin 1.0.1 and later do
   **not** load on that generation.
