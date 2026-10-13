@@ -18,7 +18,7 @@ Four rules when you use it:
   back to a normal local WBPP. When a user is scared about their data, that is the line to
   hold, and it is true.
 
-Applies to **plugin 1.8.0**. To check the user's version: the **title bar of the first
+Applies to **plugin 1.9.0**. To check the user's version: the **title bar of the first
 window** ("Distributed WBPP  [build …]") shows the build, and the installed version is
 listed in **Resources → Updates**.
 
@@ -29,13 +29,15 @@ listed in **Resources → Updates**.
 | | |
 |---|---|
 | What it is | A PixInsight script that runs the **native WBPP** across several PixInsight machines on the same local network |
-| Version | 1.8.0 · GPL-3.0 · free and open source |
+| Version | 1.9.0 · GPL-3.0 · free and open source |
 | Requires | **PixInsight 1.9.4 or newer**, with **WBPP 3.0.1** — the same versions on **every** machine |
 | Platforms | Windows, macOS, Linux — including a mix of them in the same cluster |
 | Where it lives | **Script → CaeloWorks → Distributed WBPP** |
 | Install it on | **Every** machine of the cluster, server and helpers alike |
 | Licences | Every machine runs a real, licensed PixInsight. The plugin does not replace PixInsight. |
-| Network | Plain LAN. **No shared folder, no NAS, no manual IP address.** Nothing leaves the local network; no internet needed. |
+| Network | Plain LAN. **No shared folder, no NAS, no manual IP address.** Nothing leaves the local network; no internet needed. Transfers are encrypted (TLS). |
+| Cluster key | 32 letters and digits, created on the server, pasted **once** on each client. Only PCs with the same key work together. |
+| Plugin version | The **same plugin version on every PC**. 1.9.x and 1.8.x cannot work together. |
 | Repository | https://github.com/caelo-works/distributed-wbpp |
 | Product page | https://pixinsight-scripts.caelo.works/en/scripts/distributed-wbpp |
 
@@ -44,9 +46,9 @@ on it, exactly as usual. The other machines are **Clients**: they run the same s
 click "Client", and leave the window open. The server splits the heavy work across the
 clients and collects the results.
 
-**The one thing that changes in the user's habits:** starting the script in **Client** mode
-on the other PCs before launching the run. Everything else — frames, settings, output
-folder — is stock WBPP.
+**What changes in the user's habits:** pasting the server's **cluster key** once on each
+client, and starting the script in **Client** mode on the other PCs before launching the
+run. Everything else (frames, settings, output folder) is stock WBPP.
 
 ---
 
@@ -60,11 +62,9 @@ The plugin must be installed on **every** machine of the cluster, server and cli
 2. Add `https://pixinsight-scripts.caelo.works/update/`
 3. **Resources → Updates → Check for Updates**, accept, **restart PixInsight**.
 
-Updates then arrive through the same channel automatically.
-
-> **"Unsigned repository" warning.** Expected. The repository is not CPD-signed yet;
-> signing is underway. Tell the user it is safe to accept, and that this is a signature on
-> the *repository*, not a virus warning.
+Updates then arrive through the same channel automatically. The repository is signed with
+the Caelo Works Certified PixInsight Developer identity, so PixInsight checks where the
+updates come from and that they were not altered.
 
 ### Route B — manual
 
@@ -106,6 +106,11 @@ the `DistributedWBPP.svg` file was not extracted next to `DistributedWBPP.js`. R
 
 ### 3.1 The order matters, and it is the number-one mistake
 
+0. **Once, the first time:** on the driving PC, run the script and click **"Server — drive
+   WBPP"**: a **cluster key** is created and shown in the server dashboard (field **"Cluster
+   key (paste it once on each client)"**). On each helper PC, paste that key in the
+   **Cluster key** field of the role picker. Each PC remembers its key; this step is not
+   repeated.
 1. **On each helper PC first:** **Script → CaeloWorks → Distributed WBPP** → click
    **"Client — help"**. Leave that window open.
 2. **Then on the driving PC:** same script → click **"Server — drive WBPP"**.
@@ -119,11 +124,13 @@ server?*
 
 ### 3.2 The three windows
 
-- **Role picker** — opens on every machine. Two buttons: **"Server — drive WBPP"** and
-  **"Client — help"**. The title bar shows the build number.
-- **Server dashboard** — opens next to WBPP on the server. Shows the connected clients, a
-  timestamped event log, and a **"Distributed steps: N"** counter. It is non-modal:
-  **closing it does not stop the run.**
+- **Role picker** — opens on every machine. A **Cluster key** field with a **New key**
+  button, then the buttons **"Server — drive WBPP"**, **"Client — help"**, **"Network,
+  programs and files…"** (the full list of what the script uses on the network and on
+  disk) and **Cancel**. The title bar shows the build number.
+- **Server dashboard** — opens next to WBPP on the server. Shows the cluster key to paste
+  on the clients, the connected clients, a timestamped event log, and a **"Distributed
+  steps: N"** counter. It is non-modal: **closing it does not stop the run.**
 - **Client window** — on each helper. Header **"Client active. Waiting for work from the
   server…"**, an event log, and a status bar: **"Jobs: N · Frames processed: N · Errors:
   N"**. The **"Leave client mode"** button quits.
@@ -142,10 +149,7 @@ Then, during the run, lines like:
 On the **client window**:
 
 > `Received: registration — 26 frame(s)`
-> `✓ registration : 26 frame(s) en 3m 18s`
-
-(The client line really does say "en" — a leftover French word in the 1.8.0 build. It is
-cosmetic, not an error.)
+> `✓ registration : 26 frame(s) in 3m 18s`
 
 In **WBPP's own Execution Monitor**, distributed steps are tagged **`[cluster]`** in the
 status column. That tag is the proof the work was really distributed.
@@ -217,9 +221,12 @@ the network layout.
 - All machines on the **same LAN subnet**. Discovery uses **UDP multicast**, which does not
   cross subnets, VLANs or a guest Wi-Fi network.
 - The companion program (`wbpp-sidecar`) must be able to **receive inbound connections** on
-  a port the operating system assigns at random each run.
-- Frames travel over plain HTTP on the LAN, each file verified with a checksum. **Nothing
-  goes to the internet.**
+  a port the operating system assigns at random each run, and the multicast announcements
+  on UDP `239.255.42.99`, port `42099`. PixInsight talks to its own companion on
+  `127.0.0.1:48099` (same computer only).
+- Every PC must have the **same cluster key**. Transfers are encrypted (TLS 1.3) and
+  authenticated with that key; a PC without it cannot join, read or alter anything.
+  **Nothing goes to the internet.**
 
 ### 5.2 The firewall rule — the most common blocker
 
@@ -247,8 +254,28 @@ waiting, but the server says **"no workers discovered"** and runs locally.
 - **Multicast filtered** by a managed switch or a Wi-Fi access point (IGMP snooping
   misconfigured). Test by putting both machines on the same wired switch.
 - A **VPN client** on one of the machines capturing the routes.
-- **Mismatched plugin versions** between machines — always make sure every PC runs the same
-  plugin version.
+- **Mismatched plugin versions** between machines: always make sure every PC runs the same
+  plugin version. A 1.8.x client is ignored by a 1.9.x server, and the server dashboard
+  says so: `⚠ Ignored a client at <address>: older version (protocol 2). Update it to
+  Distributed WBPP 1.9.0 or later.`
+- **A different cluster key** on a client: it is ignored, and the server dashboard says
+  `⚠ Ignored a client at <address>: different cluster key. Paste this server's cluster key
+  on it.`
+
+### 5.4 The cluster key
+
+- Created on the server the first time it runs (or with **New key**), from the system's
+  secure random source: 32 letters and digits, shown as 8 groups of 4. Dashes, spaces and
+  case do not matter when pasting.
+- Pasted **once** on each client, in the **Cluster key** field of the role picker. Each PC
+  stores it in its PixInsight settings, so it is pre-filled next time.
+- **New key** replaces it. Every client then needs the new key; until it gets it, the
+  server ignores it ("different cluster key").
+- It is what keeps two clusters on the same network apart: two people can each run a
+  distributed WBPP on the same LAN at the same time, with different keys, without ever
+  sharing a helper.
+- The key is never sent over the network. If a user thinks it leaked, **New key** on the
+  server and paste the new one on the clients.
 
 ---
 
@@ -256,8 +283,9 @@ waiting, but the server says **"no workers discovered"** and runs locally.
 
 ### 6.1 The rule
 
-Every machine of the cluster must run **the same PixInsight version** and **the same WBPP
-version**. This is checked automatically before any work is sent. A single machine on a
+Every machine of the cluster must run **the same PixInsight version**, **the same WBPP
+version** and **the same Distributed WBPP version** (1.9.x cannot work with 1.8.x: the
+1.9.0 release changed the network protocol). This is checked automatically before any work is sent. A single machine on a
 different build is enough for it to be refused, and the run then happens locally on the
 server.
 
@@ -266,7 +294,7 @@ silently wrong master is worse than no speedup.
 
 ### 6.2 What is supported
 
-- **PixInsight 1.9.4 + WBPP 3.0.1** → use plugin **1.1.0 or newer** (current: 1.8.0).
+- **PixInsight 1.9.4 + WBPP 3.0.1** → use plugin **1.1.0 or newer** (current: 1.9.0).
   Verified: full run distributed, outputs pixel-identical to a local-only run.
 - **PixInsight 1.9.3 + WBPP 2.9.1** → use plugin **1.0.0 only**. Plugin 1.0.1 and later do
   **not** load on that generation.
@@ -299,9 +327,17 @@ The user will copy-paste these. Here is what each one really means.
 
 ### 7.1 Messages that stop the script
 
-- **"Sidecar not found next to the script."** (followed by the paths it tried)
-  The `bin/` folder is missing from the install. The zip was extracted incompletely or to
-  the wrong place. Reinstall.
+- **"No sidecar that runs on this computer was found next to the script."** (followed by
+  the paths it tried)
+  The `bin/` folder is missing from the install, or holds no build for this OS and
+  processor. The zip was extracted incompletely or to the wrong place. Reinstall.
+- **"Paste the cluster key shown in the Distributed WBPP window of the server (32 letters
+  and digits; dashes and spaces do not matter)."** (when clicking **Client**)
+  The **Cluster key** field is empty or not a valid key. Copy the key from the server
+  dashboard and paste it in that field.
+- **"This is not a valid cluster key. Clear the field to have a new key created, or click
+  New key."** (when clicking **Server**)
+  The field holds something that is not a key. Clearing it makes the server create one.
 - **"Could not start the sidecar: …"** (client)
   The companion binary exists but cannot run: wrong OS binary, missing execute permission,
   or blocked by security software. Reinstall; on macOS/Linux check the file is executable;
@@ -340,6 +376,9 @@ On the **client** window:
 - **"✗ Failed job <id>: <message>"** — that job was re-run on the server. The message names
   the real cause (disk full, a frame PixInsight itself refused, out of memory on that
   machine). The **"Errors: N"** counter counts these.
+- **"✗ Failed job <id>: rejected job: …"** — the client refused a job it did not consider
+  valid (it only runs a fixed list of WBPP processes, with known parameters). Between PCs
+  on the same versions this should never happen: collect the logs and escalate.
 
 Repeated fallbacks are worth escalating — the run is correct, but something is wrong.
 
@@ -361,11 +400,12 @@ roles use the same local control channel, and starting one clears the other's). 
 benefit anyway: the server already uses its own CPU for its share of the work. **If a user
 did this, tell them to pick one role per machine.**
 
-### 8.3 Only one cluster per network at a time
+### 8.3 The PCs' clocks must roughly agree
 
-Two people running a distributed WBPP on the same LAN at the same time will **compete for
-the same helper machines** — there is no way to separate two clusters today. **Workaround:**
-run one at a time.
+Every request between PCs is time-stamped and refused if the clocks differ by more than
+**10 minutes**. PCs that set their time automatically (the default on Windows, macOS and
+Linux) are fine. A PC with a wrong clock is seen but its work fails, and the logs mention
+the **clock** difference. **Fix:** turn on automatic time on that PC.
 
 ### 8.4 Cosmetic Correction and Debayer are not distributed
 
@@ -384,24 +424,23 @@ catalogue installed on each machine. These steps set a floor on the total run ti
 If the user re-runs a job WBPP already has in cache, no work is computed, so nothing is
 distributed and the dashboard stays empty. **This is not a failure.**
 
-### 8.7 The companion binary is not code-signed
+### 8.7 The companion binary is not code-signed by Microsoft or Apple
 
-It is a small unsigned executable that opens network sockets — a classic **antivirus false
-positive**, and on macOS it can raise a security prompt (in practice Gatekeeper does not
-block it, because PixInsight launches it directly). Users can allow-list
-`…/CaeloWorks/DistributedWBPP/bin/wbpp-sidecar-*`. Code signing is on the roadmap.
+It is a small executable that opens network sockets, a classic **antivirus false
+positive**. Users can allow-list `…/CaeloWorks/DistributedWBPP/bin/wbpp-sidecar-*`. On
+macOS, Gatekeeper does not block it, because PixInsight starts it directly; the script
+never touches the macOS quarantine flag. A user who installed manually from the zip and
+wants to clear that flag can run, themselves:
+`xattr -dr com.apple.quarantine "/Applications/PixInsight/src/scripts/CaeloWorks/DistributedWBPP/bin"`.
 
-### 8.8 The helpers' temporary folder is not cleaned automatically
+### 8.8 The client cache needs free disk space during a run
 
-Each client stores the frames it receives in a temporary working folder, and it is **not
-purged between runs**. On a machine short on disk space it can grow. It is safe to empty it
-**when no run is in progress**. The client window prints the exact path on startup
-("Client started — waiting for the server (data: …)").
-
-### 8.9 The client log says "en" instead of "in"
-
-Cosmetic leftover in the 1.8.0 build: a completed job reads
-`✓ registration : 26 frame(s) en 3m 18s`. Harmless, no action needed.
+Each client keeps the frames, masters and results it receives in
+`<home>/CaeloWorks/DistributedWBPP/client-cache/` (`<home>` is the user folder, for example
+`C:/Users/<name>`). During a run it can reach the size of the client's share of the data,
+so a client short on disk space may fail its jobs (they are then recomputed on the
+server). The folder is **emptied automatically** when the client starts and when the user
+clicks **Leave client mode**.
 
 ---
 
@@ -416,6 +455,9 @@ Cosmetic leftover in the 1.8.0 build: a completed job reads
 | "The clients are seen but never receive anything" | Usually the **version handshake**: PixInsight or WBPP versions differ between machines | Compare PixInsight (**Help → About**) and WBPP versions on every machine. They must be **identical**. |
 | "The dashboard stays empty, nothing happens" | The job is **served from WBPP's cache** — nothing to compute | Have them run a job that actually recomputes something. |
 | "My second PC does nothing" | Client started after the server | Quit everything, start the client(s) first, then the server. |
+| *"⚠ Ignored a client at …: different cluster key"* | That client has another key | Copy the key from the server dashboard and paste it in the client's **Cluster key** field, then restart the client. |
+| *"⚠ Ignored a client at …: older version …"* | That client runs Distributed WBPP 1.8.x or older | Update every PC to the same version through **Resources → Updates**. |
+| "I clicked Client but the field wants a key" | No key pasted yet | Paste the key shown in the server dashboard. |
 
 ### 9.2 It runs, but not faster
 
@@ -434,8 +476,8 @@ Cosmetic leftover in the 1.8.0 build: a completed job reads
 | *"The client shows Errors: N"* | Those jobs were re-run on the server | The run is still correct. Ask for the client log: the line `✗ Failed job …` names the real cause (disk full, out of memory, a frame PixInsight refused). |
 | "I closed a client during the run" | Its jobs are recomputed on the server | Nothing is lost; the run completes correctly, just without that helper. |
 | "A client PC crashed / was unplugged" | Same | Same: recomputed on the server, no data loss. |
-| *"Sidecar not found next to the script"* | The `bin/` folder is missing | Reinstall — the whole zip tree must be extracted into the PixInsight install directory. |
-| "PixInsight warns about an unsigned repository" | Expected — the repo is not CPD-signed yet | Safe to accept. It is a signature on the repository, not a virus warning. |
+| *"No sidecar that runs on this computer was found next to the script"* | The `bin/` folder is missing | Reinstall: the whole zip tree must be extracted into the PixInsight install directory. |
+| "The logs mention a clock difference" | That PC's clock is more than 10 minutes off | Turn on automatic date and time on that PC. |
 | "My antivirus flagged wbpp-sidecar" | Unsigned executable that opens sockets — classic false positive | Allow-list `…/CaeloWorks/DistributedWBPP/bin/wbpp-sidecar-*`. |
 
 ---
@@ -447,10 +489,16 @@ These are guarantees the design actually enforces. State them plainly:
 - **A distributed run never produces a silently wrong result.** Unverified WBPP version,
   missing client, network error, a helper that crashes or is unplugged, a timeout, a
   version mismatch → the work is **recomputed on the server**, and the run continues.
-- **Every file transferred is checksum-verified.** A corrupt or missing result is
-  recomputed locally rather than accepted.
-- **It does not modify WBPP, and it does not touch the user's files.** It runs the WBPP
-  installed on the machine; WBPP writes its output exactly where the user configured it.
+- **Every file transferred is encrypted and verified.** Transfers use TLS between PCs that
+  share the cluster key, and each file is checked against a signed checksum. A corrupt or
+  missing result is recomputed locally rather than accepted.
+- **Only your PCs can join.** A machine without the cluster key cannot connect to a
+  client, send it work or read what is transferred, and a client only runs a fixed list of
+  WBPP processes, never code received from the network.
+- **It does not modify WBPP files, and it does not touch the user's files.** It runs the
+  WBPP installed on the machine and adapts it in memory only, for the session; WBPP writes
+  its output exactly where the user configured it. Nothing is written inside the
+  PixInsight installation.
 - **It has been validated bit-for-bit.** On same-OS clusters, the masters produced by a
   distributed run are bit-identical to those of a local-only run. Across different OSes
   they are numerically equivalent (see the mixed-OS caveat).
@@ -480,7 +528,8 @@ These are guarantees the design actually enforces. State them plainly:
    every machine** of the cluster (they must match, and that is often the answer).
 2. The **operating system of every machine**.
 3. The **logs**, from this folder on each machine:
-   `<PixInsight>/src/scripts/CaeloWorks/logs/` — send the `server-*.log` from the server,
+   `<home>/CaeloWorks/DistributedWBPP/logs/` (`<home>` is the user folder, for example
+   `C:/Users/<name>` on Windows, `/Users/<name>` on macOS) — send the `server-*.log` from the server,
    the `client-*.log` from each helper, plus `sidecar-agent.log` / `sidecar-worker.log` if
    present. The client window and the server dashboard both print their log path on
    startup.
