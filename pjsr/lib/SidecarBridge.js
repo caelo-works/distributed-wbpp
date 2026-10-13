@@ -14,6 +14,10 @@
  *   - worker: ONE long-lived daemon (serves the LAN + holds the pull queue);
  *     pull/report go through the `ctl` subcommands (thin local HTTP clients in
  *     Go) via files.
+ *
+ * The cluster key never goes on a command line (other local users can read
+ * those): it is written to a file the daemon reads and deletes at startup.
+ * Request/response files are removed as soon as they have been read.
  */
 
 #ifndef __WBPP_SidecarBridge_js
@@ -22,7 +26,8 @@
 function SidecarBridge( options )
 {
    this.binaryPath      = options.binaryPath;             // absolute path to the sidecar for this OS
-   this.token           = options.token       || "default";
+   this.clusterKey      = options.clusterKey  || "";       // shared cluster key (see dwbppNormalizeKey)
+   this.keyDir          = options.keyDir      || File.systemTempDirectory; // where the one-shot key file is written
    this.role            = options.role        || "server"; // "server"/"agent" | "worker"
    this.piVersion       = options.piVersion   || "unknown";
    this.wbppVersion     = options.wbppVersion || "unknown";
@@ -31,10 +36,11 @@ function SidecarBridge( options )
    this.controlPort     = options.controlPort || 48099;    // worker: local ctl port
    this.discoverSeconds = options.discoverSeconds || 3;    // server: LAN discovery window
    this.distributeTO    = options.distributeTimeout || "30m"; // server: max wait for a distributed job
-   this.peers           = options.peers || "";
-   this.killStale       = ( options.killStale !== false ); // false => don't taskkill stale sidecars (same-host bench)            // agent: static worker host:port list (bench; bypasses multicast)
+   this.peers           = options.peers || "";             // agent: static worker host:port list (bench; bypasses multicast)
+   this.killStale       = ( options.killStale !== false ); // false => don't taskkill stale sidecars (same-host bench)
 
    this.daemon = null;
+   this.incompatible = [];   // last LAN nodes the agent refused (older version, other key)
    this._seq = 0;
    // Unique per-run id so temp job/report files never collide with a previous
    // run's files in the shared temp dir (which caused stale/offset report reads).
@@ -42,14 +48,19 @@ function SidecarBridge( options )
 
    // ---- lifecycle ----------------------------------------------------------
 
-   // Optional path for the sidecar daemon's own log (diagnostics). Set from the
-   // caller's log dir so it lands on the shared drive.
+   // Optional directory for the sidecar daemon's own log (diagnostics).
    this.logDir = options.logDir || "";
 
    this.start = function()
    {
+      if ( this.clusterKey.length == 0 )
+         throw new Error( "no cluster key" );
+      // one-shot key file: the daemon reads it, then deletes it
+      var keyFile = this.keyDir + "/wbpp-key-" + this._session + ".txt";
+      File.writeTextFile( keyFile, this.clusterKey );
+
       // Inlined (no helper-method calls) so nothing can be "not a function".
-      var common = [ "--token", this.token, "--pi-version", this.piVersion, "--wbpp-version", this.wbppVersion ];
+      var common = [ "--secret-file", keyFile, "--pi-version", this.piVersion, "--wbpp-version", this.wbppVersion ];
       var isWorker = ( this.role == "worker" );
       var logArgs = this.logDir ? [ "--log-file", this.logDir + "/sidecar-" + ( isWorker ? "worker" : "agent" ) + ".log" ] : [];
       var args;
@@ -92,9 +103,15 @@ function SidecarBridge( options )
 
       this.daemon = new ExternalProcess;
       this.daemon.start( this.binaryPath, args );
-      if ( this.daemon.waitForStarted && !this.daemon.waitForStarted() )
+      var started = !( this.daemon.waitForStarted && !this.daemon.waitForStarted() );
+      if ( started )
+         msleep( 800 ); // let it read the key, bind + (worker) advertise / (agent) start browsing
+      // the daemon deletes the key file itself; make sure it is gone either way
+      try { if ( File.exists( keyFile ) ) File.remove( keyFile ); } catch ( e ) {}
+      if ( !started )
          throw new Error( "Failed to start sidecar: " + this.binaryPath );
-      msleep( 800 ); // let it bind + (worker) advertise / (agent) start browsing
+      if ( this.daemon.isRunning === false )
+         throw new Error( "the sidecar stopped at startup (see " + ( this.logDir || "its log" ) + ")" );
       return this;
    };
 
@@ -131,8 +148,9 @@ function SidecarBridge( options )
       {
          var out = this._tmp( "nodes.json" );
          this._runOneShot( [ "ctl", "nodes", "--control-port", String( this.controlPort ), "--out-file", out ] );
-         var r = this._readJSON( out );
+         var r = this._consumeJSON( out );
          var list = ( r && r.workers ) ? r.workers : [];
+         this.incompatible = ( r && r.incompatible ) ? r.incompatible : [];
          if ( list.length > best.length ) { best = list; lastGrow = ( new Date ).getTime(); }
          var now = ( new Date ).getTime();
          if ( ( best.length > 0 && now - lastGrow >= settleMs ) || now - start > waitMs )
@@ -165,13 +183,14 @@ function SidecarBridge( options )
                                   "--in-file", jf, "--out-file", rf ] );
       if ( P.waitForStarted && !P.waitForStarted() )
          throw new Error( "ctl distribute did not start" );
-      return { process: P, reportFile: rf };
+      return { process: P, jobFile: jf, reportFile: rf };
    };
 
    this.distributeWait = function( handle )
    {
       handle.process.waitForFinished( -1 );
-      var rep = this._readJSON( handle.reportFile );
+      this._remove( handle.jobFile );
+      var rep = this._consumeJSON( handle.reportFile );
       if ( rep == null )
          throw new Error( "distribute: no report produced (" + handle.reportFile + ")" );
       if ( rep.error )
@@ -185,7 +204,7 @@ function SidecarBridge( options )
    {
       var out = this._tmp( "pull.json" );
       this._runOneShot( [ "ctl", "pull", "--control-port", String( this.controlPort ), "--out-file", out ] );
-      var r = this._readJSON( out );
+      var r = this._consumeJSON( out );
       return ( r && r.job_id ) ? r : null; // {} (no work) => null
    };
 
@@ -194,14 +213,10 @@ function SidecarBridge( options )
       var inf = this._tmp( "result.json" );
       File.writeTextFile( inf, JSON.stringify( result ) );
       this._runOneShot( [ "ctl", "result", "--control-port", String( this.controlPort ), "--in-file", inf ] );
+      this._remove( inf );
    };
 
    // ---- internals ----------------------------------------------------------
-
-   this._common = function()
-   {
-      return [ "--token", this.token, "--pi-version", this.piVersion, "--wbpp-version", this.wbppVersion ];
-   };
 
    this._tmp = function( name )
    {
@@ -231,6 +246,20 @@ function SidecarBridge( options )
          return null;
       try { return JSON.parse( File.readTextFile( path ) ); }
       catch ( e ) { return null; }
+   };
+
+   // Read a response file, then delete it (the client polls every second, so
+   // leaving them behind would fill the temp dir over a long session).
+   this._consumeJSON = function( path )
+   {
+      var r = this._readJSON( path );
+      this._remove( path );
+      return r;
+   };
+
+   this._remove = function( path )
+   {
+      try { if ( File.exists( path ) ) File.remove( path ); } catch ( e ) {}
    };
 }
 
