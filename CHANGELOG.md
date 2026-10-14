@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-10-14
+
+### Changed
+- The README describes this product only: the CaeloWorks catalogue badge, banner and
+  footer link are removed. No change to the script, the sidecar or the network protocol;
+  1.9.2 and 1.9.1 nodes work together.
+
 ## [1.9.1] - 2026-10-13
 
 ### Added
@@ -289,7 +296,10 @@ A 1.9.0 server ignores 1.8.x clients and names them in its dashboard.
   reproducible release artifact (`build-update-package.sh`).
 - Verified on PixInsight 1.9.3 / WBPP 2.9.1 (see [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)).
 
-[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/caelo-works/distributed-wbpp/compare/v1.9.2...HEAD
+[1.9.2]: https://github.com/caelo-works/distributed-wbpp/compare/v1.9.1...v1.9.2
+[1.9.1]: https://github.com/caelo-works/distributed-wbpp/compare/v1.9.0...v1.9.1
+[1.9.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/caelo-works/distributed-wbpp/compare/v1.5.0...v1.6.0
