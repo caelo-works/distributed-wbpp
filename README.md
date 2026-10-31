@@ -16,7 +16,7 @@
 ## End of life: Distributed WBPP is withdrawn
 
 **Distributed WBPP is withdrawn, every version, by 2026-12-12.** It does not fit the rules
-of the PixInsight Certified Developer Program, so it is no longer distributed, updated or
+of the Certified PixInsight Developer Program, so it is no longer distributed, updated or
 supported.
 
 **Removing it from the CaeloWorks update repository does not uninstall it.** Copies

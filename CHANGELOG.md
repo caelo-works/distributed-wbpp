@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format is based on
 
 ### Removed
 - **Distributed WBPP is withdrawn, every version, by 2026-12-12.** It does not fit the rules
-  of the PixInsight Certified Developer Program, so it is no longer distributed, updated or
+  of the Certified PixInsight Developer Program, so it is no longer distributed, updated or
   supported, and no new version will be released. Removing it from the CaeloWorks update
   repository does not uninstall it: remove it from every PC and do not leave client mode
   running. The uninstall steps are in the
