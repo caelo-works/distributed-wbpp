@@ -50,7 +50,7 @@ that contains `PixInsight.app`, `src` and `rsc`) or `/opt/PixInsight` on Linux.
    Keep `<PixInsight>/src/scripts/CaeloWorks/` itself if other CaeloWorks scripts are
    installed.
 3. **Refresh the menu.** Start PixInsight, open **Script > Feature Scripts…**, click
-   **Regenerate**, then restart PixInsight. **Script > CaeloWorks > Distributed WBPP** is
+   **Regenerate**, then **Done**, and restart PixInsight. **Script > CaeloWorks > Distributed WBPP** is
    gone.
 4. **Delete the files in your user folder:**
    - `<home>/CaeloWorks/DistributedWBPP/` (logs and client cache, versions 1.9.x), then
@@ -58,10 +58,16 @@ that contains `PixInsight.app`, `src` and `rsc`) or `/opt/PixInsight` on Linux.
    - in the system temporary folder, any leftover `wbpp-*` file or folder, and the
      `wbpp-cluster-worker` folder (versions 1.0.0 to 1.8.x).
 5. **Delete the cluster key** (versions 1.9.x; earlier versions had none). It is stored in
-   the PixInsight settings under `DistributedWBPP/clusterKey`. Open
-   **Script > Script Editor**, create a new file (**File > New**), paste
-   `Settings.remove( "DistributedWBPP/clusterKey" );` and run it (**Execute > Compile & Run**,
-   or F9). Close the editor without saving.
+   the PixInsight settings under `DistributedWBPP/clusterKey`. With a text editor, create a
+   file named `remove-dwbpp-key.js` that contains this single line:
+
+   ```
+   Settings.remove( "DistributedWBPP/clusterKey" );
+   ```
+
+   In PixInsight, choose **Script > Execute Script File…**, select that file: it runs at
+   once. Then delete the file. (In Windows Notepad, choose "All files" when saving, so the file
+   is not named `remove-dwbpp-key.js.txt`.)
 6. **Remove the firewall rule** for `wbpp-sidecar`, if you allowed it: on Windows, in
    **Windows Security > Firewall & network protection > Allow an app through firewall**; on
    macOS, in **System Settings > Network > Firewall > Options**.
