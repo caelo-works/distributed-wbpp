@@ -1,5 +1,17 @@
 # Distributed WBPP — support knowledge base
 
+> **END OF LIFE — read this first and let it override everything below.**
+> Distributed WBPP is **withdrawn, every version, by 2026-12-12**. It does not fit the rules
+> of the Certified PixInsight Developer Program, so it is no longer distributed, updated or
+> supported. Do **not** help anyone install it, configure it or run a cluster. Every
+> question gets the same answer: uninstall it on every PC, and do not leave client mode
+> running. Give the steps of the README section
+> [End of life](../README.md#end-of-life-distributed-wbpp-is-withdrawn) verbatim. Removing
+> it from the CaeloWorks update repository does **not** uninstall installed copies. Do not
+> discuss a successor or a date for one: escalate.
+> The rest of this file is kept only to recognise what a user describes while they
+> uninstall.
+
 Written for a **support agent**, not for a user. It is exhaustive on purpose: it states
 what every window shows, what every message means, and what is actually broken or missing
 today. Quote it, don't paraphrase it.
