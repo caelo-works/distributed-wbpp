@@ -1,5 +1,12 @@
 # Security policy
 
+> **Distributed WBPP is withdrawn, every version, by 2026-12-12, and no version is
+> supported any more.** No security fix will be released. Uninstall it from every PC and
+> do not leave client mode running: see
+> [End of life](README.md#end-of-life-distributed-wbpp-is-withdrawn) for the steps.
+> Version 1.0.0 runs code received from the network
+> ([GHSA-r9w7-3wf4-hhr2](https://github.com/caelo-works/distributed-wbpp/security/advisories/GHSA-r9w7-3wf4-hhr2)).
+
 ## Reporting a vulnerability
 
 Please **do not** open a public issue for security problems. Use GitHub's private
@@ -64,6 +71,8 @@ it.
 
 ## Supported versions
 
-Security fixes target the **latest released version**. The protection described above
-(cluster key, encrypted and signed transfers, data-only jobs) exists from 1.9.0 on: keep
-every PC of the cluster on the latest version. See [`CHANGELOG.md`](CHANGELOG.md).
+**None.** The product is withdrawn and no version receives security fixes. The protection
+described above (cluster key, encrypted and signed transfers, data-only jobs) exists from
+1.9.0 on; 1.0.0 to 1.8.x have none of it
+([GHSA-r9w7-3wf4-hhr2](https://github.com/caelo-works/distributed-wbpp/security/advisories/GHSA-r9w7-3wf4-hhr2)).
+Uninstall every version. See [`CHANGELOG.md`](CHANGELOG.md).
